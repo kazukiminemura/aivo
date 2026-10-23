@@ -32,6 +32,11 @@ class FakeBackends:
         self.stt_calls = 0
         self.gate = None
         self.generated = False
+        self.cancelled_generations = []
+        self.tts_gate = None
+        self.tts_started = threading.Event()
+        self.tts_calls = 0
+        self.tts_cancelled = False
 
     def vad(self):
         return FakeVAD()
@@ -46,19 +51,35 @@ class FakeBackends:
 
     async def chat_stream(self, client, messages):
         self.messages.append([dict(m) for m in messages])
-        if self.block:
-            await asyncio.Event().wait()
-        if self.fail:
-            self.fail = False
-            raise RuntimeError("test service failure")
-        yield "test ", 1.0
-        if self.gate is not None:
-            while not self.gate.is_set():
-                await asyncio.sleep(.01)
-        yield "answer", 1.0
-        self.generated = True
+        generation = len(self.messages)
+        gate = self.gate
+        try:
+            if self.block:
+                await asyncio.Event().wait()
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("test service failure")
+            yield "test ", 1.0
+            if gate is not None:
+                while not gate.is_set():
+                    await asyncio.sleep(.01)
+            yield "answer", 1.0
+            self.generated = True
+        except asyncio.CancelledError:
+            self.cancelled_generations.append(generation)
+            raise
 
     async def synthesize(self, client, text):
+        self.tts_calls += 1
+        if self.tts_gate is not None and self.tts_calls >= 2:
+            self.tts_started.set()
+            try:
+                gate = self.tts_gate
+                while not gate.is_set():
+                    await asyncio.sleep(.01)
+            except asyncio.CancelledError:
+                self.tts_cancelled = True
+                raise
         return b"RIFFtest"
 
 
@@ -294,3 +315,109 @@ def test_stop_during_stream_discards_remaining_audio(session):
         fake.gate.set()
         ws.send_json({"type": "reset"})
         assert ws.receive_json()["state"] == "Idle"
+
+
+def send_voice_frames(ws, count):
+    frame = np.full(FRAME, .5, dtype="<f4").tobytes()
+    for _ in range(count):
+        ws.send_bytes(frame)
+
+
+def send_silent_frames(ws, count=25):
+    frame = np.zeros(FRAME, dtype="<f4").tobytes()
+    for _ in range(count):
+        ws.send_bytes(frame)
+
+
+def receive_interruption(ws, old_turn):
+    event = ws.receive_json()
+    assert event["type"] == "interrupted"
+    assert event["interrupted_turn_id"] == old_turn
+    assert event["turn_id"] > old_turn
+    assert ws.receive_json()["state"] == "Listening"
+    return event
+
+
+def test_barge_in_after_audio_end_preserves_new_word_and_ignores_old_played(session):
+    client, fake = session
+    with connect(client) as ws:
+        ws.receive_json()
+        start(ws)
+        send_turn(ws)
+        old = receive_audio(ws)
+        send_voice_frames(ws, 5)
+        receive_interruption(ws, old["turn_id"])
+        ws.send_json({"type": "played", "turn_id": old["turn_id"]})
+        # The detector's five confirmed frames must seed the new utterance.
+        # Three more frames produce the regular segmenter's 250 ms minimum.
+        send_voice_frames(ws, 3)
+        send_silent_frames(ws)
+        new = receive_audio(ws)
+        assert new["turn_id"] > old["turn_id"]
+        assert fake.stt_calls == 2
+        ws.send_json({"type": "played", "turn_id": new["turn_id"]})
+        assert ws.receive_json()["state"] == "Listening"
+
+
+def test_barge_in_cancels_pending_generation_and_stop_clears_new_utterance(session):
+    client, fake = session
+    fake.gate = threading.Event()
+    with connect(client) as ws:
+        ws.receive_json()
+        start(ws)
+        send_turn(ws)
+        assert ws.receive_json()["state"] == "Processing"
+        assert ws.receive_json()["role"] == "user"
+        first = ws.receive_json()
+        assert first["type"] == "audio"
+        send_voice_frames(ws, 5)
+        receive_interruption(ws, first["turn_id"])
+        assert fake.cancelled_generations == [1]
+        ws.send_json({"type": "played", "turn_id": first["turn_id"]})
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["state"] == "Idle"
+        send_voice_frames(ws, 8)
+        send_silent_frames(ws)
+        ws.send_json({"type": "reset"})
+        assert ws.receive_json()["state"] == "Idle"
+        assert fake.stt_calls == 1
+
+
+def test_barge_in_cancels_pending_tts_before_new_turn_can_speak(session):
+    client, fake = session
+    fake.tts_gate = threading.Event()
+    with connect(client) as ws:
+        ws.receive_json()
+        start(ws)
+        send_turn(ws)
+        assert ws.receive_json()["state"] == "Processing"
+        assert ws.receive_json()["role"] == "user"
+        first = ws.receive_json()
+        assert first["type"] == "audio"
+        assert fake.tts_started.wait(timeout=2), "Second TTS call must be in flight"
+        send_voice_frames(ws, 5)
+        receive_interruption(ws, first["turn_id"])
+        assert fake.tts_cancelled
+        fake.tts_gate = None
+        send_voice_frames(ws, 3)
+        send_silent_frames(ws)
+        new = receive_audio(ws)
+        assert new["turn_id"] > first["turn_id"]
+        assert fake.stt_calls == 2
+
+
+def test_playback_end_preserves_speech_shorter_than_barge_confirmation(session):
+    client, fake = session
+    with connect(client) as ws:
+        ws.receive_json()
+        start(ws)
+        send_turn(ws)
+        old = receive_audio(ws)
+        send_voice_frames(ws, 2)
+        ws.send_json({"type": "played", "turn_id": old["turn_id"]})
+        assert ws.receive_json()["state"] == "Listening"
+        send_voice_frames(ws, 6)
+        send_silent_frames(ws)
+        new = receive_audio(ws)
+        assert new["turn_id"] > old["turn_id"]
+        assert fake.stt_calls == 2

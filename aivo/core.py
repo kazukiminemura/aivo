@@ -33,7 +33,12 @@ class Settings:
     context: int = field(default_factory=lambda: int(os.getenv("AIVO_CONTEXT", "4096")))
     keep_alive: str = field(default_factory=lambda: os.getenv("AIVO_KEEP_ALIVE", "30m"))
 
+    barge_threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_BARGE_THRESHOLD", ".65")))
+    barge_min_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_BARGE_MIN_MS", "160")))
+
     def __post_init__(self):
+        if not .1 <= self.barge_threshold <= .99 or not 64 <= self.barge_min_ms <= 1000:
+            raise ValueError("Barge-in threshold: 0.1-0.99; speech duration: 64-1000 ms")
         self.ollama = local_url(self.ollama)
         self.voicevox = local_url(self.voicevox)
         if not 32 <= self.max_tokens <= 2048 or not 1024 <= self.context <= 32768:

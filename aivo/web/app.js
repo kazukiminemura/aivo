@@ -4,26 +4,31 @@ const states = {
   Preparing: ['マイクを準備しています', '初回はモデルの読み込みに時間がかかる場合があります。'],
   Listening: ['聞いています', '話し終わったら、少し間をあけてください。'],
   Processing: ['考えています', 'このPCで、声を認識して回答を作っています。'],
-  Speaking: ['aivoが話しています', '停止ボタンで、いつでも再生を止められます。'],
+  Speaking: ['aivoが話しています', '話しかけると読み上げを止めます。'],
 };
 let socket, stream, context, capture, input, playback, audioSession;
 let state = 'Idle', running = false, accepting = false, generation = 0, turn = 0, ready = false;
 let stopTimer;
 let protocolWarning = false;
+let voiceInterruption = false;
 let captureEpoch = 0, captureReady = false;
 let stopAcknowledgement = Promise.resolve(), acknowledgeStop = null;
 
+function capturesDuring(value) {
+  return value === 'Listening' || (value === 'Speaking' && voiceInterruption);
+}
 function showState(value) {
-  const changed = state !== value;
+  const captureChanged = capturesDuring(state) !== capturesDuring(value);
   const warmedUp = state === 'Preparing' && value === 'Listening';
-  if (changed && capture) {
+  if (captureChanged && capture) {
     captureReady = false;
-    capture.port.postMessage({type: 'capture', enabled: value === 'Listening', epoch: ++captureEpoch});
+    capture.port.postMessage({type: 'capture', enabled: capturesDuring(value), epoch: ++captureEpoch});
   }
   state = value;
   $('state').textContent = value === 'Listening' && capture && !captureReady
     ? 'マイクを再開しています' : states[value][0];
-  $('hint').textContent = states[value][1];
+  $('hint').textContent = value === 'Speaking' && !voiceInterruption
+    ? '停止ボタンで、いつでも再生を止められます。' : states[value][1];
   $('orb').dataset.state = value;
   $('start').disabled = running || !ready;
   $('stop').disabled = !running;
@@ -38,10 +43,10 @@ function command(type, extra = {}) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type, ...extra}));
 }
 function handleCapture(message) {
-  if (!message || message.epoch !== captureEpoch || state !== 'Listening' || !running || !accepting) return;
+  if (!message || message.epoch !== captureEpoch || !capturesDuring(state) || !running || !accepting) return;
   if (message.type === 'ready') {
     captureReady = true;
-    showState('Listening');
+    showState(state);
     return;
   }
   if (message.type !== 'frame' || !captureReady || socket?.readyState !== WebSocket.OPEN) return;
@@ -183,6 +188,11 @@ async function receive(message, fromSocket) {
   }
   if (!running || !accepting || message.turn_id < turn) return;
   turn = message.turn_id;
+  if (message.type === 'interrupted') {
+    clearPlayback();
+    showState('Listening');
+    return;
+  }
   if (message.type === 'state' && states[message.state]) showState(message.state);
   if (message.type === 'transcript') addMessage(message.role, message.text);
   if (message.type === 'error') {
@@ -280,6 +290,7 @@ async function refresh() {
     const response = await fetch('/api/health', {signal: AbortSignal.timeout(8000), cache: 'no-store'});
     if (!response.ok) throw new Error();
     const health = await response.json();
+    voiceInterruption = health.voice_interruption === true;
     const protocolCurrent = health.response_protocol === 'final-json-v1';
     ready = health.ready && protocolCurrent;
     if (!protocolCurrent && running) stop();
@@ -307,7 +318,7 @@ async function refresh() {
       : `未ロード（設定: ${health.stt_device} / ${health.stt_compute || 'auto'}）`;
     const gpuRuntime = health.gpu_loaded
       ? `GPU常駐 ${Math.round((health.size_vram || 0) / 1048576)} MiB` : 'GPU常駐なし';
-    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'}`;
+    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 音声割り込み: ${voiceInterruption ? '有効' : '未対応（サーバーを更新）'}`;
     if (!ready) $('hint').textContent = protocolCurrent
       ? 'READMEの初期設定を完了し、サービスを起動して「再確認」を押してください。'
       : 'サーバーを再起動してから、この画面を再読み込みしてください。';

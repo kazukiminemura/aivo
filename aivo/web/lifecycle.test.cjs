@@ -139,7 +139,7 @@ test('warmup failure stops microphone state and server Idle acknowledges cleanup
 test('configuration displays actual precision and GPU allocation; first-audio timing is a server estimate', async () => {
   const h = harness();
   h.sandbox.fetch = async () => ({ok: true, json: async () => ({
-    ready: true, stt: true, ollama: true, voicevox: true, response_protocol: 'final-json-v1', runtime_id: 'abc12345',
+    ready: true, stt: true, ollama: true, voicevox: true, voice_interruption: true, response_protocol: 'final-json-v1', runtime_id: 'abc12345',
     stt_model: 'whisper', stt_device: 'auto', actual_stt_device: 'cuda', actual_stt_compute: 'int8_float16',
     llm_model: 'qwen', quantization: 'Q4_K_M', gpu_loaded: true, size_vram: 1073741824, speaker: 3,
   })});
@@ -162,12 +162,11 @@ test('microphone resume rejects queued old frames until the current worklet read
   h.sandbox.capturedFrames = [];
   vm.runInContext(`capture = {port: {postMessage: (message) => captureCommands.push(message)}, disconnect() {}};
     socket.send = (frame) => capturedFrames.push(frame);
-    showState('Speaking'); showState('Listening');`, h.ctx);
+    showState('Processing'); showState('Listening');`, h.ctx);
   const currentEpoch = vm.runInContext('captureEpoch', h.ctx);
   assert.equal(h.nodes.get('state').textContent, 'マイクを再開しています');
-  assert.equal(h.sandbox.captureCommands.length, 2);
-  assert.equal(h.sandbox.captureCommands[0].enabled, false);
-  assert.equal(h.sandbox.captureCommands[1].enabled, true);
+  assert.equal(h.sandbox.captureCommands.length, 1);
+  assert.equal(h.sandbox.captureCommands[0].enabled, true);
   h.sandbox.workletEpoch = currentEpoch;
   vm.runInContext(`handleCapture({type:'frame', epoch:workletEpoch - 1, pcm:'old'});
     handleCapture({type:'ready', epoch:workletEpoch - 1});
@@ -177,7 +176,7 @@ test('microphone resume rejects queued old frames until the current worklet read
     handleCapture({type:'frame', epoch:workletEpoch, pcm:'new'});`, h.ctx);
   assert.deepEqual(h.sandbox.capturedFrames, ['new']);
   assert.equal(h.nodes.get('state').textContent, '聞いています');
-  assert.equal(h.sandbox.captureCommands.length, 2, 'ready acknowledgement does not create another reset loop');
+  assert.equal(h.sandbox.captureCommands.length, 1, 'ready acknowledgement does not create another reset loop');
 });
 
 test('legacy server without final response validation is clearly identified and cannot start a conversation', async () => {
@@ -200,4 +199,41 @@ test('legacy server without final response validation is clearly identified and 
   assert.equal(vm.runInContext('ready', h.ctx), true);
   assert.equal(h.nodes.get('start').disabled, false);
   assert.equal(h.nodes.get('error').hidden, true, 'successful new server verification clears only the stale-version warning');
+});
+
+test('voice interruption stops playback and queued decodes without acknowledging old turn or resetting the live mic', async () => {
+  const h = harness({deferred: true});
+  h.sandbox.captureCommands = [];
+  h.sandbox.capturedFrames = [];
+  vm.runInContext(`voiceInterruption = true;
+    capture = {port: {postMessage: (message) => captureCommands.push(message)}, disconnect() {}};
+    const baseSend = socket.send;
+    socket.send = (frame) => typeof frame === 'string' && frame.startsWith('{') ? baseSend(frame) : capturedFrames.push(frame);
+    showState('Listening');
+    handleCapture({type:'ready', epoch:captureEpoch});`, h.ctx);
+  const captureEpoch = vm.runInContext('captureEpoch', h.ctx);
+  const first = h.receive(h.audio(1)); await flush();
+  h.decodes.shift()(); await first;
+  assert.match(h.nodes.get('hint').textContent, /話しかけると読み上げを止めます/);
+  vm.runInContext(`handleCapture({type:'frame', epoch:captureEpoch, pcm:'while-speaking'})`, h.ctx);
+  assert.deepEqual(h.sandbox.capturedFrames, ['while-speaking'], 'microphone stays live while AI speaks');
+  const staleEnded = h.sources[0].onended;
+  const second = h.receive(h.audio(2)); await flush();
+  await h.receive({type: 'audio_end'});
+  await h.receive({type: 'interrupted', turn_id: 8, interrupted_turn_id: 7});
+  assert.equal(h.sources[0].stopped, true);
+  assert.equal(h.sources[0].onended, null);
+  assert.equal(vm.runInContext('state', h.ctx), 'Listening');
+  assert.equal(vm.runInContext('captureEpoch', h.ctx), captureEpoch);
+  assert.equal(vm.runInContext('captureReady', h.ctx), true);
+  assert.equal(h.sandbox.captureCommands.length, 1, 'Speaking to Listening preserves the current user audio buffers');
+  await h.receive(h.audio(3)); // Late PCM from the interrupted server turn.
+  await h.receive({type: 'audio_end'});
+  h.decodes.shift()(); await second;
+  staleEnded();
+  assert.equal(h.sources.length, 1, 'queued and late old audio never play');
+  assert.deepEqual(h.sent, [], 'interrupted turns are never acknowledged as fully played');
+  vm.runInContext(`handleCapture({type:'frame', epoch:captureEpoch, pcm:'continuing-user'})`, h.ctx);
+  assert.deepEqual(h.sandbox.capturedFrames, ['while-speaking', 'continuing-user']);
+  assert.equal(vm.runInContext('running && accepting && context !== null', h.ctx), true);
 });

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from aivo.backends import Backends, readiness
+from aivo.barge_in import BargeIn
 from aivo.core import FRAME, SAMPLE_RATE, Segmenter, Settings, build_messages
 
 load_dotenv(encoding="utf-8-sig")
@@ -43,6 +44,9 @@ async def index():
 @app.get("/api/health")
 async def health():
     status = await readiness(settings)
+    status["voice_interruption"] = True
+    status["barge_threshold"] = settings.barge_threshold
+    status["barge_min_ms"] = settings.barge_min_ms
     status["response_protocol"] = RESPONSE_PROTOCOL
     status["runtime_id"] = RUNTIME_ID
     status["actual_stt_device"] = backends.actual_stt_device
@@ -60,28 +64,57 @@ async def conversation(ws: WebSocket):
     session_id = uuid.uuid4().hex
     turn_id = 0
     task = None
-    active = listening = awaiting_playback = False
+    active = listening = awaiting_playback = playback_pending = False
     history = []
+    pending_user = None
+    pending_answer = []
+    committed_turn = None
     segmenter = Segmenter(settings.threshold, settings.silence_ms)
     vad = None
+    barge = BargeIn(settings.barge_threshold, settings.barge_min_ms)
     client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5), trust_env=False)
 
     async def emit(kind, **data):
         await ws.send_json({"type": kind, "session_id": session_id, "turn_id": turn_id,
                             "timestamp": perf_counter(), **data})
 
-    async def cancel():
-        nonlocal task, active, listening, awaiting_playback, turn_id
+    async def cancel(interrupted=False):
+        nonlocal task, active, listening, awaiting_playback, playback_pending, turn_id
+        nonlocal pending_user, pending_answer, committed_turn
+        old_turn = turn_id
         turn_id += 1
-        active = listening = awaiting_playback = False
+        active = listening = awaiting_playback = playback_pending = False
         if task:
             task.cancel()
+        if interrupted:
+            # Stop sound before awaiting cancellation of the generation pipeline.
+            await emit("interrupted", interrupted_turn_id=old_turn)
+        if task:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
             task = None
+        if interrupted:
+            marker = "\n（この応答の読み上げ中にユーザーが割り込みました。最後まで伝わっていません。）"
+            if pending_user is not None:
+                history.extend([{"role": "user", "content": pending_user},
+                                {"role": "assistant", "content": "".join(pending_answer) + marker}])
+                del history[:-40]
+            elif committed_turn == old_turn and history:
+                history[-1]["content"] += marker
+        pending_user, pending_answer, committed_turn = None, [], None
         segmenter.reset()
+        barge.reset()
         if vad is not None:
             vad.reset_states()
+
+    def seed_capture(raw):
+        # Replay detector pre-roll into normal VAD so the first syllables survive.
+        import torch
+        for offset in range(0, len(raw), FRAME * 4):
+            frame = raw[offset:offset + FRAME * 4]
+            samples = np.frombuffer(frame, dtype="<f4").copy()
+            probability = float(vad(torch.from_numpy(samples), SAMPLE_RATE).item())
+            segmenter.feed(frame, probability)
 
     async def start_session():
         nonlocal vad, listening, active
@@ -105,7 +138,8 @@ async def conversation(ws: WebSocket):
             await emit("state", state="Idle")
 
     async def process(raw, vad_wait):
-        nonlocal active, awaiting_playback
+        nonlocal active, awaiting_playback, playback_pending
+        nonlocal pending_user, pending_answer, committed_turn
         started = perf_counter()
         metrics = {"vad_ms": round(vad_wait, 1), "tts_ms": 0.0}
         producer = None
@@ -119,6 +153,7 @@ async def conversation(ws: WebSocket):
                     active = False
                     await emit("state", state="Listening")
                     return
+                pending_user, pending_answer, committed_turn = text, [], None
                 await emit("transcript", role="user", text=text)
                 messages = build_messages(history, text, settings.context)
                 queue = asyncio.Queue(maxsize=2)
@@ -150,6 +185,11 @@ async def conversation(ws: WebSocket):
                     metrics["tts_ms"] = round(metrics["tts_ms"] + (perf_counter() - tts_start) * 1000, 1)
                     if chunk_index == 0:
                         metrics["first_audio_ready_ms"] = round((perf_counter() - started) * 1000 + vad_wait, 1)
+                    if not playback_pending:
+                        barge.reset()
+                        vad.reset_states()
+                        playback_pending = True
+                    pending_answer.append(chunk)
                     await emit("audio", chunk_index=chunk_index, final=False,
                                wav=base64.b64encode(wav).decode(), metrics=dict(metrics))
                     chunk_index += 1
@@ -161,13 +201,17 @@ async def conversation(ws: WebSocket):
                 metrics["server_ms"] = round((perf_counter() - started) * 1000 + vad_wait, 1)
                 history.extend([{"role": "user", "content": text}, {"role": "assistant", "content": answer}])
                 del history[:-40]
+                committed_turn = turn_id
+                pending_user, pending_answer = None, []
                 awaiting_playback = True
                 await emit("audio_end", metrics=metrics)
                 logger.info("session=%s turn=%s device=%s compute=%s llm=%s metrics=%s", session_id, turn_id,
                             getattr(backends, "actual_stt_device", settings.stt_device),
                             getattr(backends, "actual_stt_compute", settings.stt_compute), settings.llm, metrics)
         except Exception as exc:
-            active = awaiting_playback = False
+            active = awaiting_playback = playback_pending = False
+            pending_user, pending_answer = None, []
+            barge.reset()
             if isinstance(exc, httpx.HTTPStatusError):
                 message = f"Local service HTTP {exc.response.status_code}. Check Ollama / VOICEVOX."
             elif isinstance(exc, (httpx.RequestError, TimeoutError)):
@@ -193,7 +237,9 @@ async def conversation(ws: WebSocket):
                 if len(raw) != FRAME * 4:
                     await ws.close(code=1009, reason="Expected 512 float32 samples")
                     break
-                if not listening or active or vad is None:
+                if not listening or vad is None:
+                    continue
+                if active and not playback_pending:
                     continue
                 samples = np.frombuffer(raw, dtype="<f4")
                 if not np.isfinite(samples).all() or np.max(np.abs(samples)) > 1.01:
@@ -201,6 +247,14 @@ async def conversation(ws: WebSocket):
                     break
                 import torch
                 probability = float(vad(torch.from_numpy(samples.copy()), SAMPLE_RATE).item())
+                if active:
+                    interrupted_audio = barge.feed(raw, probability)
+                    if interrupted_audio is not None:
+                        await cancel(interrupted=True)
+                        listening = True
+                        seed_capture(interrupted_audio)
+                        await emit("state", state="Listening")
+                    continue
                 result = segmenter.feed(raw, probability)
                 if result is not None:
                     turn_id += 1
@@ -220,10 +274,16 @@ async def conversation(ws: WebSocket):
                     if kind == "reset":
                         history.clear()
                     await emit("state", state="Idle")
+                elif kind == "played" and command.get("turn_id") != turn_id:
+                    # A source callback may already be queued when interruption stops it.
+                    continue
                 elif kind == "played" and command.get("turn_id") == turn_id and active and awaiting_playback:
-                    active = awaiting_playback = False
+                    pending_audio = barge.take_pending()
+                    active = awaiting_playback = playback_pending = False
                     segmenter.reset()
                     vad.reset_states()
+                    if pending_audio:
+                        seed_capture(pending_audio)
                     await emit("state", state="Listening")
                 else:
                     await emit("error", message="Unknown command")

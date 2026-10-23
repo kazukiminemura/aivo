@@ -20,6 +20,6 @@
   </section>
   <section class="conversation-panel"><div class="section-heading"><h2>会話</h2><span>この接続中のみ保持</span></div><div id="transcript" role="log" aria-label="会話の履歴" aria-live="polite"><p id="empty" class="empty">ここに、あなたとaivoの会話が表示されます。</p></div></section>
   <details class="metrics-panel"><summary>処理時間・実行構成</summary><p id="configuration">接続確認後に構成を表示します。</p><dl id="metrics"><dt>処理時間</dt><dd>最初の応答後に表示</dd></dl><p class="note">サーバー処理はVADの設定待機時間を含む概算です。実際の発話終了から音声出力開始までの遅延とは異なります。</p></details>
-  <footer>クラウド推論APIを使いません。モデルの初回取得にはネット接続が必要です。<br>初版は交互に会話します。AIの応答中はマイク送信を休止します。</footer>
+  <footer>クラウド推論APIを使いません。モデルの初回取得にはネット接続が必要です。<br>読み上げ中も話しかけられます。声を検出するとaivoの読み上げを止めます。</footer>
 </main>
 </body></html>
