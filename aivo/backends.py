@@ -9,6 +9,7 @@ import httpx
 
 from aivo.core import speech_chunks
 from aivo.answer import parse_final_answer
+from aivo.dialogue import STATE_SCHEMA
 
 logger = logging.getLogger("aivo")
 
@@ -62,23 +63,30 @@ class Backends:
 
     def llm_options(self):
         return {"num_predict": self.settings.max_tokens, "num_ctx": self.settings.context,
-                "temperature": 0.7, "top_p": 0.9, "repeat_penalty": 1.1}
+                "temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.1}
 
-    def generation_request(self, messages):
+    def generation_request(self, messages, dialogue=None):
         # Enforce an answer envelope at decoding time, then validate it before
         # anything is handed to playback. Do not stream raw model prose to TTS.
         schema = {"type": "object", "properties": {"reply": {"type": "string", "minLength": 1}},
                   "required": ["reply"], "additionalProperties": False}
+        if dialogue is not None:
+            schema["properties"]["state"] = STATE_SCHEMA
+            schema["required"] = ["reply", "state"]
         wire_messages = [dict(message) for message in messages]
         instruction = ('日本語の会話の返答本文だけをreplyに入れてください。'
                        '出力は{"reply":"返答本文"}というJSONオブジェクト一つだけです。'
                        '思考過程、発言の分析、回答方針の説明をreplyに含めないでください。')
+        if dialogue is not None:
+            instruction = ('出力はreplyとstateを持つJSON。思考過程を含めない。' + dialogue.instruction())
         if wire_messages and wire_messages[0]["role"] == "system":
             wire_messages[0]["content"] += "\n" + instruction
         else:
             wire_messages.insert(0, {"role": "system", "content": instruction})
         payload = {"model": self.settings.llm, "stream": True, "think": False,
                    "keep_alive": self.settings.keep_alive, "options": self.llm_options(), "format": schema}
+        if dialogue is not None:
+            payload["options"]["num_predict"] = min(2048, self.settings.max_tokens + 384)
         if self.settings.llm.rsplit("/", 1)[-1].split(":", 1)[0].lower() == "qwen3":
             # Bypass the installed legacy template entirely: its trailing <think>
             # survives native /api/chat even when think:false is requested.
@@ -116,9 +124,9 @@ class Backends:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def chat_stream(self, client, messages):
+    async def chat_stream(self, client, messages, dialogue=None):
         started, first, size, done, raw = perf_counter(), None, 0, False, []
-        path, payload = self.generation_request(messages)
+        path, payload = self.generation_request(messages, dialogue)
         async with client.stream("POST", self.settings.ollama + path, json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -140,7 +148,7 @@ class Backends:
                     break
         if not done:
             raise RuntimeError("Ollama stream ended before completion")
-        answer = parse_final_answer("".join(raw))
+        answer = dialogue.accept_response("".join(raw)) if dialogue is not None else parse_final_answer("".join(raw))
         # Validation must finish before the first chunk can reach UI/TTS/history.
         parts, _ = speech_chunks(answer, final=True)
         for part in parts:

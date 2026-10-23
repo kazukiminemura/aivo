@@ -49,7 +49,7 @@ class FakeBackends:
     async def prepare(self, client):
         pass
 
-    async def chat_stream(self, client, messages):
+    async def chat_stream(self, client, messages, dialogue=None):
         self.messages.append([dict(m) for m in messages])
         generation = len(self.messages)
         gate = self.gate

@@ -102,3 +102,19 @@ def test_oversized_latest_input_is_preserved_without_partial_history():
 def test_two_natural_acknowledgements_are_not_a_fixed_response_loop():
     replies = ["わかりました。", "次に何をしたいですか？", "わかりました。", "猫じゃらしがおすすめです。", "あずき"]
     assert regression_failures(TURNS, replies) == []
+
+
+def test_weather_check_catches_reported_conversation_failures():
+    from aivo.check_conversation import WEATHER_TURNS, weather_failures
+    bad = ["こんにちは！今日の天気はどうですか？",
+           "寒いんですね。お手伝いできることがありましたら教えてくださいね。",
+           "花火が見える天気なんですね！明日はどんな感じですか？",
+           "フォガ（薄い煙）が見えるってことですか？",
+           "どこの花火ですか？"]
+    failures = weather_failures(WEATHER_TURNS, bad)
+    assert len(failures) == 6
+    good = ["こんにちは！", "暖かくしてね。",
+            "予報は確認できないけど、花火なら雨と風が気になるね。場所はどこ？",
+            "ごめん、明日花火を見に行きたいということだね。場所は？",
+            "東京だね。最新の予報と、主催者の開催情報を確認してから出かけてね。"]
+    assert weather_failures(WEATHER_TURNS, good) == []

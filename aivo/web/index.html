@@ -2,24 +2,28 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark"><title>aivo — ローカル音声アシスタント</title>
+  <meta name="color-scheme" content="dark"><title>aivo — 音声会話</title>
   <link rel="stylesheet" href="/static/style.css">
   <script type="module" src="/static/app.js"></script>
 </head>
 <body>
 <main>
-  <header><a class="brand" href="/">aivo<span class="brand-dot">●</span></a><span class="local-badge">ON YOUR DEVICE</span></header>
-  <section class="intro"><p class="eyebrow">あなたの声から、会話がはじまる。</p><h1>話そう。ここで、気軽に。</h1><p class="subtitle">音声も会話も、このPCの中で。ローカルAIと日本語で会話できます。</p></section>
-  <section class="status-panel" aria-label="サービスの準備状態"><div id="services" aria-live="polite">接続を確認しています…</div><button id="refresh" class="text-button">再確認</button></section>
+  <header><a class="brand" href="/">aivo<span class="brand-dot">●</span></a><span class="local-badge">ローカル音声AI</span></header>
   <section class="voice-panel" aria-label="音声会話">
     <div id="orb" class="orb" data-state="Idle" aria-hidden="true"><div class="orb-inner"></div><div class="wave"><i></i><i></i><i></i><i></i><i></i></div></div>
-    <p id="state" class="state" role="status">会話をはじめましょう</p><p id="hint" class="hint">開始すると、マイクの使用許可を求めます。</p>
-    <div class="controls"><button id="start" class="primary">会話を開始</button><button id="stop" disabled>停止</button><button id="reset">新しい会話</button></div>
-    <label class="mic-label" for="microphone">入力マイク<select id="microphone"><option value="">システムの既定</option></select></label>
+    <h1 id="state" class="state" role="status">会話をはじめましょう</h1><p id="hint" class="hint">開始すると、マイクの使用許可を求めます。</p>
+    <div class="controls"><button id="start" class="primary">会話を開始</button><button id="stop" disabled>停止</button></div>
     <p id="error" class="error" role="alert" hidden></p>
   </section>
-  <section class="conversation-panel"><div class="section-heading"><h2>会話</h2><span>この接続中のみ保持</span></div><div id="transcript" role="log" aria-label="会話の履歴" aria-live="polite"><p id="empty" class="empty">ここに、あなたとaivoの会話が表示されます。</p></div></section>
-  <details class="metrics-panel"><summary>処理時間・実行構成</summary><p id="configuration">接続確認後に構成を表示します。</p><dl id="metrics"><dt>処理時間</dt><dd>最初の応答後に表示</dd></dl><p class="note">サーバー処理はVADの設定待機時間を含む概算です。実際の発話終了から音声出力開始までの遅延とは異なります。</p></details>
-  <footer>クラウド推論APIを使いません。モデルの初回取得にはネット接続が必要です。<br>読み上げ中も話しかけられます。声を検出するとaivoの読み上げを止めます。</footer>
+  <section class="conversation-panel" aria-label="会話">
+    <div class="section-heading"><h2>会話</h2><button id="reset" class="text-button">新しい会話</button></div>
+    <div id="transcript" role="log" aria-label="会話の履歴" aria-live="polite"><p id="empty" class="empty">話しかけると、ここに会話が表示されます。</p></div>
+  </section>
+  <details class="settings-panel"><summary>設定</summary>
+    <label class="mic-label" for="microphone">マイク<select id="microphone"><option value="">システムの既定</option></select></label>
+    <section class="status-panel" aria-label="接続状況"><div id="services" aria-live="polite">接続を確認しています…</div><button id="refresh" class="text-button">再確認</button></section>
+    <details class="metrics-panel"><summary>応答時間・実行構成</summary><p id="configuration">接続確認後に構成を表示します。</p><dl id="metrics"><dt>応答時間</dt><dd>最初の応答後に表示</dd></dl><p class="note">サーバー計測はVADの設定待機時間を含む概算です。実際の発話終了から音声出力開始までの遅延とは異なります。</p></details>
+  </details>
+  <footer>会話はこの接続中のみ保持されます。</footer>
 </main>
 </body></html>

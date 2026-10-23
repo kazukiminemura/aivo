@@ -18,6 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from aivo.backends import Backends, readiness
 from aivo.barge_in import BargeIn
+from aivo.dialogue import DialogueState
 from aivo.core import FRAME, SAMPLE_RATE, Segmenter, Settings, build_messages
 
 load_dotenv(encoding="utf-8-sig")
@@ -66,6 +67,7 @@ async def conversation(ws: WebSocket):
     task = None
     active = listening = awaiting_playback = playback_pending = False
     history = []
+    dialogue = DialogueState()
     pending_user = None
     pending_answer = []
     committed_turn = None
@@ -155,14 +157,14 @@ async def conversation(ws: WebSocket):
                     return
                 pending_user, pending_answer, committed_turn = text, [], None
                 await emit("transcript", role="user", text=text)
-                messages = build_messages(history, text, settings.context)
+                messages = build_messages(history, text, settings.context - 2 * len(dialogue.instruction()) - 384)
                 queue = asyncio.Queue(maxsize=2)
                 parts = []
                 llm_start = perf_counter()
 
                 async def generate():
                     try:
-                        async for chunk, ttft in backends.chat_stream(client, messages):
+                        async for chunk, ttft in backends.chat_stream(client, messages, dialogue=dialogue):
                             if chunk:
                                 parts.append(chunk)
                                 metrics["ttft_ms"] = ttft
@@ -273,6 +275,7 @@ async def conversation(ws: WebSocket):
                     await cancel()
                     if kind == "reset":
                         history.clear()
+                        dialogue.reset()
                     await emit("state", state="Idle")
                 elif kind == "played" and command.get("turn_id") != turn_id:
                     # A source callback may already be queued when interruption stops it.

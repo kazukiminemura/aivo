@@ -58,7 +58,7 @@ class StreamingTests(unittest.TestCase):
         request = requests[0]
         self.assertEqual(request["model"], "qwen3:0.6b-q4_K_M")
         self.assertFalse(request["think"])
-        self.assertEqual(request["options"], {"num_predict": 128, "num_ctx": 2048, "temperature": 0.7, "top_p": 0.9, "repeat_penalty": 1.1, "stop": ["<|im_end|>", "<|im_start|>"]})
+        self.assertEqual(request["options"], {"num_predict": 128, "num_ctx": 2048, "temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.1, "stop": ["<|im_end|>", "<|im_start|>"]})
         self.assertEqual(request["keep_alive"], "30m")
 
     def test_truncated_stream_raises_instead_of_committing_a_partial_answer(self):
