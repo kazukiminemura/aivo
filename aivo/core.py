@@ -1,0 +1,123 @@
+import os
+from collections import deque
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
+
+SAMPLE_RATE = 16000
+FRAME = 512
+FRAME_MS = FRAME / SAMPLE_RATE * 1000
+
+
+def local_url(value):
+    url = urlsplit(value)
+    if (url.scheme != "http" or url.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or url.username or url.password or url.path not in {"", "/"}
+            or url.query or url.fragment):
+        raise ValueError("Service URLs must be loopback HTTP origins")
+    return value.rstrip("/")
+
+
+@dataclass
+class Settings:
+    stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "models/whisper-small"))
+    stt_device: str = field(default_factory=lambda: os.getenv("AIVO_STT_DEVICE", "auto"))
+    stt_compute: str = field(default_factory=lambda: os.getenv("AIVO_STT_COMPUTE", "auto"))
+    ollama: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OLLAMA_URL", "http://127.0.0.1:11434")))
+    llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "qwen3:4b"))
+    voicevox: str = field(default_factory=lambda: local_url(os.getenv("AIVO_VOICEVOX_URL", "http://127.0.0.1:50021")))
+    speaker: int = field(default_factory=lambda: int(os.getenv("AIVO_SPEAKER", "3")))
+    threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_VAD_THRESHOLD", ".5")))
+    silence_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_SILENCE_MS", "800")))
+
+    max_tokens: int = field(default_factory=lambda: int(os.getenv("AIVO_MAX_TOKENS", "192")))
+    context: int = field(default_factory=lambda: int(os.getenv("AIVO_CONTEXT", "4096")))
+    keep_alive: str = field(default_factory=lambda: os.getenv("AIVO_KEEP_ALIVE", "30m"))
+
+    def __post_init__(self):
+        self.ollama = local_url(self.ollama)
+        self.voicevox = local_url(self.voicevox)
+        if not 32 <= self.max_tokens <= 2048 or not 1024 <= self.context <= 32768:
+            raise ValueError("max_tokens: 32-2048; context: 1024-32768")
+        if self.stt_device not in {"auto", "cpu", "cuda"}:
+            raise ValueError("STT device must be auto, cpu, or cuda")
+        if not .1 <= self.threshold <= .95 or not 200 <= self.silence_ms <= 3000:
+            raise ValueError("VAD threshold: 0.1-0.95; silence: 200-3000 ms")
+
+
+class Segmenter:
+    def __init__(self, threshold=.5, silence_ms=800):
+        self.threshold, self.silence_ms = threshold, silence_ms
+        self.reset()
+
+    def reset(self):
+        self.pre = deque(maxlen=8)
+        self.frames = []
+        self.voiced = self.silent = 0
+
+    def feed(self, frame, probability):
+        speech = probability >= self.threshold
+        if not self.frames:
+            self.pre.append(frame)
+            if not speech:
+                return None
+            self.frames = list(self.pre)
+            self.pre.clear()
+        else:
+            self.frames.append(frame)
+        self.voiced += int(speech)
+        self.silent = 0 if speech else self.silent + 1
+        if self.silent * FRAME_MS >= self.silence_ms or len(self.frames) * FRAME_MS >= 30000:
+            result = b"".join(self.frames) if self.voiced * FRAME_MS >= 250 else None
+            self.reset()
+            return result
+        return None
+
+
+def speech_chunks(text, final=False):
+    """Split complete phrases, with a bounded wait for punctuation."""
+    chunks = []
+    while text:
+        boundary = next((i + 1 for i, c in enumerate(text[:48])
+                         if c in "。！？!?\n" or (c in "、,，" and i >= 15)), None)
+        if boundary is None:
+            if len(text) < 48 and not final:
+                break
+            boundary = min(48, len(text))
+        part, text = text[:boundary], text[boundary:]
+        if part.strip():
+            chunks.append(part)
+    return chunks, text
+
+
+CONVERSATION_PROMPT = """あなたはaivo、日本語で自然に会話する相手です。
+ユーザーの直近の発言の意図に答え、会話履歴の話題・名前・訂正を踏まえて対話を続けてください。
+入力の続きを自動補完したり、発言をそのまま復唱・添削したりしないでください。
+短い発言や音声認識の誤りで意味が分からないときは、内容を決めつけず、短い確認の質問を一つしてください。
+ユーザーが否定・訂正したら、前の解釈を見直してください。同じ定型文で返答し続けないでください。
+通常は1〜3文で簡潔に話し、読み上げ用にMarkdownや箇条書きを避けてください。
+思考過程・回答の計画・指示の説明を出力せず、ユーザーに話しかける返答本文だけを出力してください。"""
+
+
+def build_messages(history, text, context):
+    """Keep recent complete exchanges within a conservative character budget.
+
+    Two tokens per character is an estimate, not a tokenizer guarantee.
+    Always preserve the system instruction and the current utterance.
+    """
+    if len(history) % 2:
+        raise ValueError("History must contain complete user/assistant exchanges")
+    budget = max(0, (context - 512) // 2 - len(CONVERSATION_PROMPT) - len(text))
+    exchanges = []
+    for index in range(len(history) - 2, -1, -2):
+        pair = history[index:index + 2]
+        if [m.get("role") for m in pair] != ["user", "assistant"]:
+            raise ValueError("History must contain complete user/assistant exchanges")
+        size = sum(len(m["content"]) for m in pair)
+        if size > budget:
+            break
+        exchanges.append(pair)
+        budget -= size
+    messages = [{"role": "system", "content": CONVERSATION_PROMPT}]
+    for pair in reversed(exchanges):
+        messages.extend({"role": m["role"], "content": m["content"]} for m in pair)
+    return [*messages, {"role": "user", "content": text}]
