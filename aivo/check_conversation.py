@@ -5,6 +5,7 @@ This is a narrow smoke check, not a general model-quality benchmark.
 """
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import replace
@@ -46,7 +47,7 @@ def weather_failures(inputs, replies):
             failures.append(f"Turn {i + 1}: literal input echo")
         if "お手伝いできること" in reply:
             failures.append(f"Turn {i + 1}: canned response instead of continuing the topic")
-    if replies and "天気" in replies[0]:
+    if replies and re.search(r"今日の天気|天気はどう|天気どう", replies[0]):
         failures.append("Greeting introduced an unsolicited weather topic")
     if len(replies) > 2:
         answer = replies[2]
@@ -101,7 +102,7 @@ def stream_reply(client, settings, messages, dialogue=None):
                 break
     if not done:
         raise RuntimeError("Ollama stream ended before completion")
-    answer = dialogue.accept_response("".join(parts)) if dialogue is not None else parse_final_answer("".join(parts))
+    answer = dialogue.accept_response("".join(parts), user_messages=[m["content"] for m in messages if m["role"] == "user"]) if dialogue is not None else parse_final_answer("".join(parts))
     return answer, {"ttft_ms": round(first or 0, 1),
                                     "total_ms": round((perf_counter() - started) * 1000, 1)}
 

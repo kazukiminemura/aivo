@@ -69,7 +69,7 @@ def test_weather_followup_uses_state_and_exact_date_with_source():
 ])
 def test_missing_parameters_do_not_send_external_queries(location, day, expected):
     client = Client({"tool": "weather", "query": "", "location": location, "date": day})
-    result, sources = run(client, "明日の天気")
+    result, sources = run(client, ("東京の2027年1月1日の天気" if expected == "unsupported_date" else "東京の天気" if expected == "needs_date" else "明日の天気"))
     assert result["status"] == expected and sources == [] and client.requests == []
 
 
@@ -121,6 +121,8 @@ def test_invalid_plan_cannot_choose_arbitrary_network_destination():
 def test_lookup_planner_has_no_conflicting_reply_contract():
     client = Client({"tool": "weather", "query": "", "location": "", "date": "2026-10-24"})
     result, _ = run(client, "今日の天気を教えて")
+    from aivo.web_search import plan_lookup
+    immediate(plan_lookup(client, Backends(Settings()), [], "今日の天気を教えて", None, NOW))
     prompt = client.posts[0]["prompt"]
     assert "reply" not in prompt
     assert client.posts[0]["format"]["required"] == ["tool", "query", "location", "date"]
@@ -155,3 +157,69 @@ def test_weather_connection_error_returns_explicit_failure_without_model():
     reply = lookup_reply(result, DialogueState())
     assert "取得できませんでした" in reply and "花火" not in reply and "どの地域" not in reply
     assert lookup_reply({"status": "disabled"}, DialogueState()) is None
+
+
+def test_original_location_is_tried_before_provider_alias_and_retained_in_state():
+    from aivo.web_search import lookup_reply
+    client = Client({"tool": "weather", "query": "", "location": "東京", "date": "2099-12-06"}, [
+        {"results": []},
+        {"results": [{"name": "Tokyo", "latitude": 35.7, "longitude": 139.7}]},
+        {"daily": {"time": ["2026-10-24"], "weather_code": [0], "temperature_2m_max": [22],
+                   "temperature_2m_min": [15], "precipitation_probability_max": [10], "wind_speed_10m_max": [3]},
+         "daily_units": {"temperature_2m_max": "°C", "wind_speed_10m_max": "m/s"}},
+    ])
+    state = DialogueState()
+    result, _ = run(client, "東京都の今日の天気", state)
+    assert result["status"] == "ok"
+    assert client.requests[0][1]["params"]["name"] == "東京都"
+    assert client.requests[1][1]["params"]["name"] == "Tokyo"
+    assert client.requests[1][1]["params"]["countryCode"] == "JP"
+    lookup_reply(result, state)
+    assert state.weather_request == {"location": "東京都", "date": "2026-10-24"}
+
+
+def test_grounded_fact_keeps_original_source_after_history_is_trimmed():
+    state = DialogueState()
+    raw = json.dumps({"reply": "覚えました。", "state": dict(state.value, facts=["猫の名前はあずきです。"])})
+    state.accept_response(raw, user_messages=["猫の名前はあずきです。"])
+    state.accept_response(raw, user_messages=["おもちゃを教えて"])
+    assert state.value["facts"] == ["猫の名前はあずきです。"]
+    assert state.fact_sources["猫の名前はあずきです。"] == "猫の名前はあずきです。"
+    state.reset()
+    assert state.fact_sources == {}
+
+
+def test_tokyo_today_calls_forecast_even_if_model_would_drop_location():
+    client = Client({"tool": "none", "query": "", "location": "", "date": ""}, [
+        {"results": [{"name": "東京都", "latitude": 35.7, "longitude": 139.7}]},
+        {"daily": {"time": ["2026-10-24"], "weather_code": [0], "temperature_2m_max": [22],
+                   "temperature_2m_min": [15], "precipitation_probability_max": [10], "wind_speed_10m_max": [3]},
+         "daily_units": {"temperature_2m_max": "°C", "wind_speed_10m_max": "m/s"}}])
+    result, _ = run(client, "今日の東京の天気を教えてください", DialogueState())
+    assert result["status"] == "ok" and result["requested_location"] == "東京"
+    assert client.posts == [], "Obvious weather questions must not depend on the LLM planner"
+    assert result["network_requests"] == [
+        {"provider": "geocoding-api.open-meteo.com", "status": "completed"},
+        {"provider": "api.open-meteo.com", "status": "completed"}]
+
+
+def test_chuo_followup_uses_gsi_exact_area_and_keeps_original_day():
+    from aivo.web_search import lookup_reply
+    state = DialogueState()
+    state.weather_request = {"location": "", "date": "2026-10-24"}
+    state.commit(dict(state.value, intent="天気", goal="今日の天気", status="clarifying"))
+    client = Client({}, [
+        {"results": []},
+        [{"properties": {"title": "東京都中央区"},
+          "geometry": {"coordinates": [139.772, 35.671]}}],
+        {"daily": {"time": ["2026-10-24"], "weather_code": [3], "temperature_2m_max": [21],
+                   "temperature_2m_min": [14], "precipitation_probability_max": [20], "wind_speed_10m_max": [2]},
+         "daily_units": {"temperature_2m_max": "°C", "wind_speed_10m_max": "m/s"}}])
+    result, sources = run(client, "東京都中央区でお願いします", state)
+    assert result["status"] == "ok" and client.posts == []
+    assert client.requests[1][0] == "https://msearch.gsi.go.jp/address-search/AddressSearch"
+    assert client.requests[1][1]["params"]["q"] == "東京都中央区"
+    assert client.requests[2][1]["params"]["latitude"] == 35.671
+    assert "東京都中央区" in lookup_reply(result, state)
+    assert any("国土地理院" in s["title"] for s in sources)
+    assert len(result["network_requests"]) == 3

@@ -211,7 +211,14 @@ async function receive(message, fromSocket) {
     return;
   }
   if (message.type === 'state' && states[message.state]) showState(message.state);
-  if (message.type === 'transcript') addMessage(message.role, message.text);
+  if (message.type === 'lookup_status') {
+    $('lookup-status').textContent = message.text;
+    $('lookup-status').hidden = !message.text;
+  }
+  if (message.type === 'transcript') {
+    if (message.role === 'user') $('lookup-status').hidden = true;
+    addMessage(message.role, message.text);
+  }
   if (message.type === 'sources' && Array.isArray(message.sources)) addSources(message.sources);
   if (message.type === 'error') {
     clearPlayback();
@@ -336,7 +343,7 @@ async function refresh() {
       : `未ロード（設定: ${health.stt_device} / ${health.stt_compute || 'auto'}）`;
     const gpuRuntime = health.gpu_loaded
       ? `GPU常駐 ${Math.round((health.size_vram || 0) / 1048576)} MiB` : 'GPU常駐なし';
-    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効' : '未対応（サーバーを更新）'}`;
+    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 検索処理: ${health.lookup_revision || "旧版"} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効' : '未対応（サーバーを更新）'}`;
     if (!ready) $('hint').textContent = protocolCurrent
       ? 'READMEの初期設定を完了し、サービスを起動して「再確認」を押してください。'
       : 'サーバーを再起動してから、この画面を再読み込みしてください。';
@@ -353,6 +360,7 @@ $('reset').addEventListener('click', async () => {
   stop();
   await stopAcknowledgement;
   command('reset');
+  $('lookup-status').hidden = true;
   $('transcript').replaceChildren();
   const empty = document.createElement('p'); empty.id = 'empty'; empty.className = 'empty';
   empty.textContent = '新しい会話をはじめましょう。'; $('transcript').append(empty);

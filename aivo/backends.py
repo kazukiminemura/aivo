@@ -152,7 +152,7 @@ class Backends:
                     break
         if not done:
             raise RuntimeError("Ollama stream ended before completion")
-        answer = dialogue.accept_response("".join(raw)) if dialogue is not None else parse_final_answer("".join(raw))
+        answer = dialogue.accept_response("".join(raw), user_messages=[m["content"] for m in messages if m["role"] == "user"]) if dialogue is not None else parse_final_answer("".join(raw))
         # Validation must finish before the first chunk can reach UI/TTS/history.
         parts, _ = speech_chunks(answer, final=True)
         for part in parts:

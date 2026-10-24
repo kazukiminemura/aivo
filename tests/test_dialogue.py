@@ -14,7 +14,7 @@ def response(state, reply="場所はどこ？"):
 
 def test_intent_location_correction_and_reset_cross_generation_boundary():
     dialogue = DialogueState()
-    first = dict(intent="天気の相談", goal="明日花火を見に行きたい", facts=["日付:明日"],
+    first = dict(intent="天気の相談", goal="明日花火を見に行きたい", facts=["明日"],
                  unresolved=["地域", "最新の天気予報"], question="場所はどこ？", status="clarifying")
     requests = []
     client = mock_client([{"response": response(first), "done": True}], requests)

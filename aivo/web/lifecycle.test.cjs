@@ -237,3 +237,13 @@ test('voice interruption stops playback and queued decodes without acknowledging
   assert.deepEqual(h.sandbox.capturedFrames, ['while-speaking', 'continuing-user']);
   assert.equal(vm.runInContext('running && accepting && context !== null', h.ctx), true);
 });
+
+
+test('lookup status shows actual request result and ignores stale turns', async () => {
+  const h = harness();
+  await h.receive({type: 'lookup_status', text: '外部リクエスト 3件：取得完了'});
+  assert.equal(h.nodes.get('lookup-status').textContent, '外部リクエスト 3件：取得完了');
+  assert.equal(h.nodes.get('lookup-status').hidden, false);
+  await h.receive({type: 'lookup_status', text: 'stale', turn_id: 6});
+  assert.equal(h.nodes.get('lookup-status').textContent, '外部リクエスト 3件：取得完了');
+});

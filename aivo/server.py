@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from aivo.backends import Backends, readiness
+from aivo.answer import parse_final_answer
 from aivo.barge_in import BargeIn
 from aivo.dialogue import DialogueState
 from aivo.web_search import lookup, evidence_message, lookup_reply
@@ -47,6 +48,7 @@ async def index():
 async def health():
     status = await readiness(settings)
     status["web_search"] = settings.web_search
+    status["lookup_revision"] = 2
     status["voice_interruption"] = True
     status["barge_threshold"] = settings.barge_threshold
     status["barge_min_ms"] = settings.barge_min_ms
@@ -161,10 +163,21 @@ async def conversation(ws: WebSocket):
                 await emit("transcript", role="user", text=text)
                 evidence, sources = None, []
                 if settings.web_search:
+                    await emit("lookup_status", text="外部情報の必要性を確認しています。")
                     evidence, sources = await lookup(client, backends, history, text, dialogue)
+                    if evidence is not None:
+                        count = len(evidence.get("network_requests", []))
+                        labels = {"ok": "取得完了", "needs_location": "地域の指定待ち", "needs_date": "日付の指定待ち",
+                                  "location_not_found": "地名検索で該当なし", "ambiguous_location": "地域の確認待ち",
+                                  "unsupported_date": "予報の対象期間外", "failed": "取得失敗"}
+                        await emit("lookup_status", text=f"外部リクエスト {count}件：{labels.get(evidence['status'], '確認完了')}")
+                    else:
+                        await emit("lookup_status", text="今回の返答では外部検索を利用していません。")
                 else:
                     evidence = {"status": "disabled", "message": "外部検索は設定で無効。最新情報は確認できない。"}
                 direct_reply = lookup_reply(evidence, dialogue)
+                if direct_reply is not None:
+                    direct_reply = parse_final_answer(json.dumps({"reply": direct_reply}))
                 extra = evidence_message(evidence)["content"] if evidence is not None else ""
                 messages = build_messages(history, text,
                     settings.context - 2 * (len(dialogue.instruction()) + len(extra)) - 384)

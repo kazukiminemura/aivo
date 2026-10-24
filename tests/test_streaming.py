@@ -1,7 +1,6 @@
 """Streaming and precision checks without sockets, external services, or models."""
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,8 +84,8 @@ class StreamingTests(unittest.TestCase):
                 return [SimpleNamespace(text="ok")], None
         modules = {"faster_whisper": SimpleNamespace(WhisperModel=Whisper),
                    "ctranslate2": SimpleNamespace(get_cuda_device_count=lambda: 1)}
-        with tempfile.TemporaryDirectory(dir=".uv-cache/tmp") as path, patch.dict(sys.modules, modules):
-            backend = Backends(Settings(stt_model=path, stt_device="auto", stt_compute="auto"))
+        with patch("aivo.backends.Path.is_dir", return_value=True), patch.dict(sys.modules, modules):
+            backend = Backends(Settings(stt_model="mock-model", stt_device="auto", stt_compute="auto"))
             self.assertEqual(backend.transcribe([]), "ok")
             self.assertEqual(devices, [("cuda", "int8_float16"), ("cpu", "int8")])
             self.assertEqual((backend.actual_stt_device, backend.actual_stt_compute), ("cpu", "int8"))
