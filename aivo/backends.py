@@ -107,7 +107,7 @@ class Backends:
         payload["messages"] = wire_messages
         return "/api/chat", payload
 
-    async def prepare(self, client):
+    async def prepare(self, client, tts_backend="voicevox"):
         import numpy as np
         async def preload_llm():
             response = await client.post(self.settings.ollama + "/api/generate", json={
@@ -119,7 +119,9 @@ class Backends:
                 raise RuntimeError("Ollama model preload failed")
         # Load kernels before Listening, including CUDA DLLs used only by STT inference.
         tasks = [asyncio.create_task(asyncio.to_thread(self.transcribe, np.zeros(8000, dtype=np.float32))),
-                 asyncio.create_task(preload_llm()), asyncio.create_task(self.synthesize(client, "はい。"))]
+                 asyncio.create_task(preload_llm())]
+        if tts_backend == "voicevox":
+            tasks.append(asyncio.create_task(self.synthesize(client, "はい。")))
         try:
             await asyncio.gather(*tasks)
         finally:
@@ -168,7 +170,9 @@ class Backends:
         params = {"speaker": self.settings.speaker}
         query = await client.post(self.settings.voicevox + "/audio_query", params={**params, "text": text})
         query.raise_for_status()
-        result = await client.post(self.settings.voicevox + "/synthesis", params=params, json=query.json())
+        audio_query = query.json()
+        audio_query["speedScale"] = self.settings.speed
+        result = await client.post(self.settings.voicevox + "/synthesis", params=params, json=audio_query)
         result.raise_for_status()
         if len(result.content) > 20_000_000 or not result.content.startswith(b"RIFF"):
             raise RuntimeError("VOICEVOX returned invalid or oversized WAV audio")
@@ -206,6 +210,11 @@ async def readiness(settings):
             response.raise_for_status()
             result["voicevox"] = any(style["id"] == settings.speaker
                                       for speaker in response.json() for style in speaker["styles"])
-        await asyncio.gather(check_ollama(), check_voicevox(), return_exceptions=True)
-    result["ready"] = all(result[k] for k in ("stt", "ollama", "voicevox"))
+        checks = [check_ollama()]
+        if settings.tts_backend != "browser":
+            checks.append(check_voicevox())
+        await asyncio.gather(*checks, return_exceptions=True)
+    result["tts_backend"] = ("voicevox" if settings.tts_backend == "voicevox" or
+                             (settings.tts_backend == "auto" and result["voicevox"]) else "browser")
+    result["ready"] = result["stt"] and result["ollama"] and (result["voicevox"] or result["tts_backend"] == "browser")
     return result

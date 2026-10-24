@@ -25,6 +25,9 @@ class Settings:
     ollama: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OLLAMA_URL", "http://127.0.0.1:11434")))
     llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "qwen3:4b"))
     voicevox: str = field(default_factory=lambda: local_url(os.getenv("AIVO_VOICEVOX_URL", "http://127.0.0.1:50021")))
+    tts_backend: str = field(default_factory=lambda: os.getenv("AIVO_TTS_BACKEND", "auto"))
+    speed: float = field(default_factory=lambda: float(os.getenv("AIVO_TTS_SPEED", "1.0")))
+    save_history: bool = field(default_factory=lambda: os.getenv("AIVO_SAVE_HISTORY", "false").lower() in {"1", "true", "yes"})
     speaker: int = field(default_factory=lambda: int(os.getenv("AIVO_SPEAKER", "3")))
     threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_VAD_THRESHOLD", ".5")))
     silence_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_SILENCE_MS", "800")))
@@ -39,6 +42,10 @@ class Settings:
     barge_min_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_BARGE_MIN_MS", "160")))
 
     def __post_init__(self):
+        if self.tts_backend not in {"auto", "voicevox", "browser"}:
+            raise ValueError("TTS backend must be auto, voicevox, or browser")
+        if not .5 <= self.speed <= 2 or not 0 <= self.speaker <= 100000:
+            raise ValueError("TTS speed: 0.5-2.0; speaker: 0-100000")
         if not .1 <= self.barge_threshold <= .99 or not 64 <= self.barge_min_ms <= 1000:
             raise ValueError("Barge-in threshold: 0.1-0.99; speech duration: 64-1000 ms")
         self.ollama = local_url(self.ollama)

@@ -88,7 +88,7 @@ def session(monkeypatch):
     from aivo import server
     fake = FakeBackends()
     monkeypatch.setattr(server, "backends", fake)
-    monkeypatch.setattr(server, "settings", Settings(silence_ms=800))
+    monkeypatch.setattr(server, "settings", Settings(silence_ms=800, web_search=False, save_history=False))
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(from_numpy=lambda value: value))
 
     async def ready(settings):

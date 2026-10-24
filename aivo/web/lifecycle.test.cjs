@@ -41,7 +41,7 @@ function harness({deferred = false} = {}) {
   };
   const ctx = vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), ctx);
-  vm.runInContext('socket = testSocket; context = testAudioContext; running = accepting = true; turn = 7;', ctx);
+  vm.runInContext('socket = testSocket; context = testAudioContext; running = accepting = true; turn = 7; voiceInterruption = true;', ctx);
   const receive = (message) => {
     sandbox.testMessage = {turn_id: 7, ...message};
     return vm.runInContext('receive(testMessage, socket)', ctx);
@@ -246,4 +246,172 @@ test('lookup status shows actual request result and ignores stale turns', async 
   assert.equal(h.nodes.get('lookup-status').hidden, false);
   await h.receive({type: 'lookup_status', text: 'stale', turn_id: 6});
   assert.equal(h.nodes.get('lookup-status').textContent, '外部リクエスト 3件：取得完了');
+});
+
+
+test('history save notices do not stop ongoing playback', async () => {
+  const h = harness();
+  await h.receive(h.audio(1));
+  assert.equal(h.sources[0].started, true);
+  await h.receive({type: 'history_status', message: '履歴の保存に失敗しました。'});
+  assert.equal(h.sources[0].stopped, undefined);
+  assert.equal(h.nodes.get('settings-message').textContent, '履歴の保存に失敗しました。');
+});
+
+
+function mockNativeSpeech(h, voices = [{name: 'Local Japanese', lang: 'ja-JP', localService: true}]) {
+  const spoken = []; let cancelled = 0, resumed = 0;
+  h.sandbox.window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
+  h.sandbox.window.speechSynthesis = {resume: () => { resumed++; }, getVoices: () => voices, speak: (utterance) => spoken.push(utterance), cancel: () => { cancelled++; }};
+  return {spoken, cancelled: () => cancelled, resumed: () => resumed};
+}
+
+test('native speech plays chunks in order and acknowledges only after the final utterance', async () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  await h.receive({type: 'speech', text: 'first', rate: 1.2});
+  await h.receive({type: 'speech', text: 'second', rate: 1.2});
+  await h.receive({type: 'audio_end'});
+  assert.equal(native.spoken.length, 1);
+  assert.equal(native.spoken[0].text, 'first');
+  assert.equal(native.spoken[0].rate, 1.2);
+  assert.equal(h.sent.length, 0);
+  native.spoken[0].onend();
+  assert.equal(native.spoken[1].text, 'second');
+  assert.equal(h.sent.length, 0);
+  native.spoken[1].onend();
+  assert.equal(h.sent.filter((m) => m.type === 'played').length, 1);
+});
+
+test('barge-in cancels native speech and ignores old completion callbacks', async () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  await h.receive({type: 'speech', text: 'old'});
+  await h.receive({type: 'speech', text: 'queued old'});
+  const oldEnd = native.spoken[0].onend;
+  await h.receive({type: 'interrupted', turn_id: 8});
+  oldEnd();
+  assert.equal(native.cancelled(), 1);
+  assert.equal(native.spoken.length, 1);
+  assert.equal(h.sent.length, 0);
+  await h.receive({type: 'speech', text: 'new', turn_id: 8});
+  assert.equal(native.spoken[1].text, 'new');
+});
+
+test('cloud-only Japanese speech is not used as a local fallback', async () => {
+  const h = harness(), native = mockNativeSpeech(h, [{lang: 'ja-JP', localService: false}]);
+  await h.receive({type: 'speech', text: 'hello'});
+  assert.equal(native.spoken.length, 0);
+  assert.equal(h.sent.some((m) => m.type === 'stop'), true);
+  assert.match(h.nodes.get('error').textContent, /日本語ローカル音声/);
+});
+
+
+test('native playback resumes synthesis and stops when speech never starts', async () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  await h.receive({type: 'speech', text: 'hello'});
+  assert.equal(native.resumed(), 1);
+  assert.equal(h.timers.size, 1);
+  [...h.timers.values()][0]();
+  assert.equal(vm.runInContext('running', h.ctx), false);
+  assert.equal(native.cancelled(), 1);
+  assert.match(h.nodes.get('error').textContent, /音声テスト/);
+  assert.equal(h.sent.some((m) => m.type === 'played'), false);
+});
+
+test('speech start clears the start timeout; stop clears it before late callbacks', async () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  await h.receive({type: 'speech', text: 'hello'});
+  native.spoken[0].onstart();
+  assert.equal(h.timers.size, 0);
+  await h.receive({type: 'interrupted', turn_id: 8});
+  assert.equal(h.timers.size, 0);
+});
+
+test('speech test runs without a microphone or server and reports synthesis errors', () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  vm.runInContext('running = false; testSpeech()', h.ctx);
+  assert.equal(native.spoken.length, 1);
+  assert.equal(native.resumed(), 1);
+  native.spoken[0].onerror({error: 'not-allowed'});
+  assert.match(h.nodes.get('speech-test-status').textContent, /not-allowed/);
+  assert.equal(h.timers.size, 0);
+  assert.deepEqual(h.sent, []);
+});
+
+
+test('native speech test is enabled even when the conversation backend is not ready', async () => {
+  const h = harness(); mockNativeSpeech(h);
+  vm.runInContext('running = false', h.ctx);
+  h.sandbox.fetch = async () => ({ok: true, json: async () => ({ready: false, tts_backend: 'browser', response_protocol: 'final-json-v1'})});
+  await vm.runInContext('refresh()', h.ctx);
+  assert.equal(h.nodes.get('start').disabled, true);
+  assert.equal(h.nodes.get('test-speech').disabled, false);
+});
+
+
+test('speaker mode blocks microphone throughout native speech and echo decay', async () => {
+  const h = harness(), native = mockNativeSpeech(h);
+  vm.runInContext(`voiceInterruption = false;
+    capture = {port: {postMessage() {}}, disconnect() {}};
+    showState('Listening'); captureReady = true;`, h.ctx);
+  await h.receive({type: 'speech', text: 'aivo reply'});
+  native.spoken[0].onstart();
+  vm.runInContext(`handleCapture({type:'ready', epoch:captureEpoch});
+    handleCapture({type:'frame', epoch:captureEpoch, pcm:'speaker-echo'});`, h.ctx);
+  assert.equal(vm.runInContext('capturesDuring(state)', h.ctx), false);
+  await h.receive({type: 'audio_end'});
+  native.spoken[0].onend();
+  assert.deepEqual(h.sent, []);
+  assert.equal(vm.runInContext('capturesDuring(state)', h.ctx), false);
+  assert.equal(h.timers.size, 1);
+  [...h.timers.values()][0]();
+  assert.deepEqual(h.sent, [{type: 'played', turn_id: 7}]);
+  await h.receive({type: 'state', state: 'Listening'});
+  assert.equal(vm.runInContext('capturesDuring(state)', h.ctx), true);
+  assert.equal(vm.runInContext('captureReady', h.ctx), false, 'old mic frames stay blocked until fresh worklet ready');
+});
+
+test('speaker mode also waits for echo decay after WAV playback', async () => {
+  const h = harness(); vm.runInContext('voiceInterruption = false', h.ctx);
+  await h.receive(h.audio(1)); await h.receive({type: 'audio_end'});
+  h.sources[0].onended();
+  assert.deepEqual(h.sent, []);
+  const acknowledge = [...h.timers.values()][0];
+  vm.runInContext('stop()', h.ctx); acknowledge();
+  assert.deepEqual(h.sent, [{type:'stop'}], 'stopped cooldown cannot restart listening');
+});
+
+for (const mode of ['native', 'wav']) {
+  test(`voice interruption works automatically during ${mode} playback without settings or buttons`, async () => {
+    const h = harness();
+    const native = mode === 'native' ? mockNativeSpeech(h) : null;
+    h.sandbox.captureMessages = [];
+    h.sandbox.fetch = async () => ({ok:true, json:async () => ({ready:true,
+      voice_interruption:true, response_protocol:'final-json-v1'})});
+    vm.runInContext(`voiceInterruption = false;
+      capture = {port: {postMessage(message) { captureMessages.push(message); }}};
+      showState('Listening'); captureReady = true;`, h.ctx);
+    await vm.runInContext('refresh()', h.ctx);
+    assert.equal(vm.runInContext('voiceInterruption', h.ctx), true);
+    if (native) await h.receive({type:'speech', text:'reply'});
+    else await h.receive(h.audio(1));
+    const epoch = vm.runInContext('captureEpoch', h.ctx);
+    vm.runInContext(`handleCapture({type:'frame', epoch:captureEpoch, pcm:'"user"'});`, h.ctx);
+    assert.deepEqual(h.sent, ['user'], 'user audio reaches the server during playback');
+    await h.receive({type:'interrupted', turn_id:8});
+    assert.equal(native ? native.cancelled() : Number(!!h.sources[0].stopped), 1);
+    assert.equal(vm.runInContext('state', h.ctx), 'Listening');
+    assert.equal(vm.runInContext('captureEpoch', h.ctx), epoch);
+    assert.equal(vm.runInContext('captureReady', h.ctx), true);
+    vm.runInContext(`handleCapture({type:'frame', epoch:captureEpoch, pcm:'"rest of user speech"'});`, h.ctx);
+    assert.deepEqual(h.sent, ['user', 'rest of user speech']);
+    assert.equal(h.nodes.has('pref-interruption'), false);
+    assert.equal(h.nodes.has('interrupt'), false);
+  });
+}
+
+test('missing server capability keeps voice interruption disabled', async () => {
+  const h = harness();
+  h.sandbox.fetch = async () => ({ok:true, json:async () => ({ready:true, response_protocol:'final-json-v1'})});
+  await vm.runInContext('refresh()', h.ctx);
+  assert.equal(vm.runInContext('voiceInterruption', h.ctx), false);
 });

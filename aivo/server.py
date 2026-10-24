@@ -3,6 +3,7 @@ import base64
 import contextlib
 import json
 import logging
+import sqlite3
 import uuid
 from pathlib import Path
 from time import perf_counter
@@ -11,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -20,12 +21,16 @@ from aivo.backends import Backends, readiness
 from aivo.answer import parse_final_answer
 from aivo.barge_in import BargeIn
 from aivo.dialogue import DialogueState
+from aivo.history import HistoryStore
+from aivo.preferences import public_settings, save_preferences
 from aivo.web_search import lookup, evidence_message, lookup_reply
 from aivo.core import FRAME, SAMPLE_RATE, Segmenter, Settings, build_messages
 
 load_dotenv(encoding="utf-8-sig")
 settings = Settings()
 backends = Backends(settings)
+ROOT = Path(__file__).resolve().parent.parent
+history_store = HistoryStore(ROOT / "data" / "history.sqlite3")
 RUNTIME_ID = uuid.uuid4().hex[:8]
 RESPONSE_PROTOCOL = "final-json-v1"
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -59,6 +64,90 @@ async def health():
     return status
 
 
+def require_same_origin(request):
+    if (request.method == "GET" and not request.headers.get("origin")
+            and request.headers.get("sec-fetch-site") == "same-origin"):
+        return
+    origin = urlsplit(request.headers.get("origin", ""))
+    if origin.scheme not in {"http", "https"} or origin.netloc != request.headers.get("host"):
+        raise HTTPException(403, "同じアプリ画面から操作してください。")
+
+
+@app.get("/api/settings")
+async def get_settings():
+    models, voices = [], []
+    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+        async def model_options():
+            nonlocal models
+            try:
+                response = await client.get(settings.ollama + "/api/tags")
+                response.raise_for_status()
+                models = [m["name"] for m in response.json().get("models", [])]
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                pass
+        async def voice_options():
+            nonlocal voices
+            try:
+                response = await client.get(settings.voicevox + "/speakers")
+                response.raise_for_status()
+                voices = [{"id": v["id"], "name": speaker["name"] + " / " + v["name"]}
+                          for speaker in response.json() for v in speaker["styles"]]
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                pass
+        await asyncio.gather(model_options(), voice_options())
+    return {"current": public_settings(settings), "models": models, "voices": voices}
+
+
+@app.post("/api/settings")
+def update_settings(request: Request, values: dict):
+    require_same_origin(request)
+    try:
+        pending = save_preferences(ROOT / ".env", values, settings)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, "設定を保存できませんでした。") from exc
+    # Persistence is an immediate privacy switch; model/runtime changes require restart.
+    settings.save_history = pending.save_history
+    return {"saved": public_settings(pending), "restart_required": True,
+            "message": "履歴保存の切り替えは次の発話から反映。他の設定はaivo再起動後に反映します。"}
+
+
+def history_call(operation, *args):
+    try:
+        return operation(*args)
+    except ValueError as exc:
+        raise HTTPException(422, "会話IDが不正です。") from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise HTTPException(503, "保存した履歴を読み書きできません。保存先を確認してください。") from exc
+
+
+@app.get("/api/history")
+def list_history(request: Request):
+    require_same_origin(request)
+    return {"enabled": settings.save_history, "conversations": history_call(history_store.list_conversations)}
+
+
+@app.get("/api/history/{conversation_id}")
+def get_history(conversation_id: str, request: Request):
+    require_same_origin(request)
+    return {"messages": history_call(history_store.get_conversation, conversation_id)}
+
+
+@app.delete("/api/history/{conversation_id}")
+def delete_history(conversation_id: str, request: Request):
+    require_same_origin(request)
+    history_call(history_store.delete_conversation, conversation_id)
+    return {"deleted": True}
+
+
+@app.delete("/api/history")
+def clear_history(request: Request):
+    require_same_origin(request)
+    history_call(history_store.clear)
+    return {"deleted": True}
+
+
 @app.websocket("/ws")
 async def conversation(ws: WebSocket):
     origin = urlsplit(ws.headers.get("origin", ""))
@@ -67,8 +156,10 @@ async def conversation(ws: WebSocket):
         return
     await ws.accept()
     session_id = uuid.uuid4().hex
+    history_id = uuid.uuid4().hex
     turn_id = 0
     task = None
+    session_tts = "voicevox"
     active = listening = awaiting_playback = playback_pending = False
     history = []
     dialogue = DialogueState()
@@ -123,7 +214,7 @@ async def conversation(ws: WebSocket):
             segmenter.feed(frame, probability)
 
     async def start_session():
-        nonlocal vad, listening, active
+        nonlocal vad, listening, active, session_tts
         active = True
         try:
             await emit("state", state="Preparing")
@@ -131,7 +222,11 @@ async def conversation(ws: WebSocket):
                 status = await readiness(settings)
                 if not status["ready"]:
                     raise RuntimeError("準備が必要です。接続状態とREADMEの初期設定を確認してください。")
-                await backends.prepare(client)
+                session_tts = status.get("tts_backend", "voicevox")
+                if session_tts == "browser":
+                    await backends.prepare(client, tts_backend="browser")
+                else:
+                    await backends.prepare(client)
                 if vad is None:
                     vad = await asyncio.to_thread(backends.vad)
                 listening = True
@@ -146,6 +241,7 @@ async def conversation(ws: WebSocket):
     async def process(raw, vad_wait):
         nonlocal active, awaiting_playback, playback_pending
         nonlocal pending_user, pending_answer, committed_turn
+        save_this_turn = settings.save_history
         started = perf_counter()
         metrics = {"vad_ms": round(vad_wait, 1), "tts_ms": 0.0}
         producer = None
@@ -214,8 +310,12 @@ async def conversation(ws: WebSocket):
                     if isinstance(chunk, Exception):
                         raise chunk
                     tts_start = perf_counter()
-                    wav = await backends.synthesize(client, chunk)
-                    metrics["tts_ms"] = round(metrics["tts_ms"] + (perf_counter() - tts_start) * 1000, 1)
+                    wav = await backends.synthesize(client, chunk) if session_tts == "voicevox" else None
+                    if session_tts == "voicevox":
+                        metrics["tts_ms"] = round(metrics["tts_ms"] + (perf_counter() - tts_start) * 1000, 1)
+                    else:
+                        metrics["tts_ms"] = None
+                        metrics["native_tts"] = True
                     if chunk_index == 0:
                         metrics["first_audio_ready_ms"] = round((perf_counter() - started) * 1000 + vad_wait, 1)
                     if not playback_pending:
@@ -223,8 +323,12 @@ async def conversation(ws: WebSocket):
                         vad.reset_states()
                         playback_pending = True
                     pending_answer.append(chunk)
-                    await emit("audio", chunk_index=chunk_index, final=False,
-                               wav=base64.b64encode(wav).decode(), metrics=dict(metrics))
+                    if session_tts == "browser":
+                        await emit("speech", chunk_index=chunk_index, final=False, text=chunk,
+                                   rate=settings.speed, metrics=dict(metrics))
+                    else:
+                        await emit("audio", chunk_index=chunk_index, final=False,
+                                   wav=base64.b64encode(wav).decode(), metrics=dict(metrics))
                     chunk_index += 1
                 await producer
                 if not parts:
@@ -236,6 +340,13 @@ async def conversation(ws: WebSocket):
                 metrics["server_ms"] = round((perf_counter() - started) * 1000 + vad_wait, 1)
                 history.extend([{"role": "user", "content": text}, {"role": "assistant", "content": answer}])
                 del history[:-40]
+                if save_this_turn and settings.save_history:
+                    try:
+                        await asyncio.to_thread(history_store.append_turn, history_id, text, answer)
+                        await emit("history_status", message="会話を保存しました。")
+                    except Exception as exc:
+                        logger.warning("history_save_error=%s", type(exc).__name__)
+                        await emit("history_status", message="返答は生成しましたが、履歴の保存に失敗しました。")
                 committed_turn = turn_id
                 pending_user, pending_answer = None, []
                 awaiting_playback = True
@@ -304,11 +415,16 @@ async def conversation(ws: WebSocket):
                 if kind == "start":
                     await cancel()
                     task = asyncio.create_task(start_session())
+                elif kind == "interrupt" and command.get("turn_id") == turn_id and active and playback_pending:
+                    await cancel(interrupted=True)
+                    listening = True
+                    await emit("state", state="Listening")
                 elif kind in {"stop", "reset"}:
                     await cancel()
                     if kind == "reset":
                         history.clear()
                         dialogue.reset()
+                        history_id = uuid.uuid4().hex
                     await emit("state", state="Idle")
                 elif kind == "played" and command.get("turn_id") != turn_id:
                     # A source callback may already be queued when interruption stops it.

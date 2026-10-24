@@ -191,3 +191,13 @@ footer { text-align: center; margin-top: 28px; }
 
 .sources { margin-top: 8px; font-size: 11px; color: #94a3b7; overflow-wrap: anywhere; }
 .sources a { color: #9fc8cd; margin-right: 8px; }
+
+.preferences { display: grid; gap: 12px; margin: 20px 0; }
+.preferences label { display: grid; gap: 5px; }
+.preferences input:not([type=checkbox]) { min-width: 0; width: 100%; padding: 8px; border: 1px solid #2a3848; border-radius: 7px; background: #111a26; color: #becbdc; font: inherit; }
+.preferences .check-label { display: flex; align-items: center; gap: 8px; }
+#settings-message { color: #b4f1dc; overflow-wrap: anywhere; }
+.saved-conversation { display: flex; align-items: center; gap: 12px; }
+.saved-conversation button:first-child { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+#saved-messages { max-height: 280px; overflow: auto; margin-top: 12px; }
+#saved-messages p { margin-bottom: 12px; }

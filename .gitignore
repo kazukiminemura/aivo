@@ -5,3 +5,6 @@ __pycache__/
 .env
 models/
 .pytest_cache/
+
+data/
+.env.*.tmp

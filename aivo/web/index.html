@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark"><title>aivo — 音声会話</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=automatic-interruption-3"></script>
 </head>
 <body>
 <main>
@@ -20,11 +20,24 @@
     <div class="section-heading"><h2>会話</h2><button id="reset" class="text-button">新しい会話</button></div>
     <div id="transcript" role="log" aria-label="会話の履歴" aria-live="polite"><p id="empty" class="empty">話しかけると、ここに会話が表示されます。</p></div>
   </section>
-  <details class="settings-panel"><summary>設定</summary>
+  <details id="settings-panel" class="settings-panel"><summary>設定</summary>
     <label class="mic-label" for="microphone">マイク<select id="microphone"><option value="">システムの既定</option></select></label>
+    <button id="test-speech" type="button" disabled>音声テスト</button><p id="speech-test-status" role="status"></p>
+    <form id="preferences" class="preferences">
+      <label>会話モデル<input id="pref-model" list="available-models" required maxlength="120"><datalist id="available-models"></datalist></label>
+      <label>VOICEVOXの声（利用時）<select id="pref-speaker"></select></label>
+      <label>読み上げ速度<input id="pref-speed" type="number" min="0.5" max="2" step="0.1" required value="1"></label>
+      <label>音声認識のデバイス<select id="pref-device"><option value="auto">自動</option><option value="cpu">CPU</option><option value="cuda">CUDA</option></select></label>
+      <label class="check-label"><input id="pref-search" type="checkbox">インターネット検索（検索語・地域名を外部送信）</label>
+      <label class="check-label"><input id="pref-history" type="checkbox">今後の会話本文をこのPCに保存</label>
+      <p class="note">保存OFFでは新規保存しません。既存の保存データは下から削除できます。</p>
+      <button type="submit" id="save-preferences">設定を保存</button>
+      <p id="settings-message" role="status"></p>
+    </form>
+    <details id="history-panel"><summary>保存した会話</summary><button id="refresh-history" class="text-button">一覧を更新</button><button id="clear-history" class="text-button">すべて削除</button><div id="saved-history"></div><div id="saved-messages"></div></details>
     <section class="status-panel" aria-label="接続状況"><div id="services" aria-live="polite">接続を確認しています…</div><button id="refresh" class="text-button">再確認</button></section>
     <details class="metrics-panel"><summary>応答時間・実行構成</summary><p id="configuration">接続確認後に構成を表示します。</p><dl id="metrics"><dt>応答時間</dt><dd>最初の応答後に表示</dd></dl><p class="note">サーバー計測はVADの設定待機時間を含む概算です。実際の発話終了から音声出力開始までの遅延とは異なります。</p></details>
   </details>
-  <footer>会話はこの接続中のみ保持されます。<br>最新情報の取得時は、検索語や地域名を外部サービスに送信します。</footer>
+  <footer>会話は既定でこの接続中のみ保持します。設定で履歴保存を有効にできます。<br>最新情報の取得時は、検索語や地域名を外部サービスに送信します。</footer>
 </main>
 </body></html>
