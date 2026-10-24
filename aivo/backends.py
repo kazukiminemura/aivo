@@ -65,7 +65,7 @@ class Backends:
         return {"num_predict": self.settings.max_tokens, "num_ctx": self.settings.context,
                 "temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.1}
 
-    def generation_request(self, messages, dialogue=None):
+    def generation_request(self, messages, dialogue=None, *, response_schema=None, response_instruction=None):
         # Enforce an answer envelope at decoding time, then validate it before
         # anything is handed to playback. Do not stream raw model prose to TTS.
         schema = {"type": "object", "properties": {"reply": {"type": "string", "minLength": 1}},
@@ -79,6 +79,10 @@ class Backends:
                        '思考過程、発言の分析、回答方針の説明をreplyに含めないでください。')
         if dialogue is not None:
             instruction = ('出力はreplyとstateを持つJSON。思考過程を含めない。' + dialogue.instruction())
+        if response_schema is not None:
+            schema = response_schema
+        if response_instruction is not None:
+            instruction = response_instruction
         if wire_messages and wire_messages[0]["role"] == "system":
             wire_messages[0]["content"] += "\n" + instruction
         else:

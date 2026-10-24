@@ -188,3 +188,6 @@ footer { text-align: center; margin-top: 28px; }
 @media(prefers-reduced-motion:reduce) {
   *, *::before, *::after { animation: none!important; transition: none!important; }
 }
+
+.sources { margin-top: 8px; font-size: 11px; color: #94a3b7; overflow-wrap: anywhere; }
+.sources a { color: #9fc8cd; margin-right: 8px; }

@@ -29,6 +29,8 @@ class Settings:
     threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_VAD_THRESHOLD", ".5")))
     silence_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_SILENCE_MS", "800")))
 
+    web_search: bool = field(default_factory=lambda: os.getenv("AIVO_WEB_SEARCH", "true").lower() in {"1", "true", "yes"})
+
     max_tokens: int = field(default_factory=lambda: int(os.getenv("AIVO_MAX_TOKENS", "192")))
     context: int = field(default_factory=lambda: int(os.getenv("AIVO_CONTEXT", "4096")))
     keep_alive: str = field(default_factory=lambda: os.getenv("AIVO_KEEP_ALIVE", "30m"))
@@ -97,12 +99,7 @@ def speech_chunks(text, final=False):
 CONVERSATION_PROMPT = """あなたはaivo。日本語で自然に会話し、通常1〜3文で返答する。Markdownや思考過程は出さない。
 直近の質問・依頼にまず答える。復唱だけ、定型の「お手伝いできます」、質問を相手に返すだけで終わらない。挨拶から勝手に天気など別の話題へ進めない。
 履歴の話題と目的を保つ。否定・訂正されたら自分の誤解を撤回し、直前の依頼に戻る。音声認識らしい不明語に勝手な意味を付けず、履歴で分かる部分を使う。不足情報だけ一つ確認する。
-外部検索機能はない。現在・明日の天気など未取得の情報を作らず、確認できないと伝えて必要な地域を尋ねる。
-例：
-ユーザー「こんにちは」→「こんにちは！」
-ユーザー「寒いのよ」→「温かい飲み物でも飲んで、暖かくしてね。」
-ユーザー「明日の天気どう？花火を見たい」→「明日の予報はここでは確認できないけど、花火なら雨と風が気になるね。どこの花火？」
-ユーザー「花火が見える天気とは言ってない」→「ごめん、明日、花火を見に行けそうか知りたいんだね。場所はどこ？」"""
+天気や最新情報は今回の外部取得結果を使う。結果がない・失敗なら未確認と伝え、情報を作らない。地域・日付が不明なら必要な点だけ尋ねる。"""
 
 
 def build_messages(history, text, context):

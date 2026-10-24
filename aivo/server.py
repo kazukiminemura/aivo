@@ -19,6 +19,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from aivo.backends import Backends, readiness
 from aivo.barge_in import BargeIn
 from aivo.dialogue import DialogueState
+from aivo.web_search import lookup, evidence_message, lookup_reply
 from aivo.core import FRAME, SAMPLE_RATE, Segmenter, Settings, build_messages
 
 load_dotenv(encoding="utf-8-sig")
@@ -45,6 +46,7 @@ async def index():
 @app.get("/api/health")
 async def health():
     status = await readiness(settings)
+    status["web_search"] = settings.web_search
     status["voice_interruption"] = True
     status["barge_threshold"] = settings.barge_threshold
     status["barge_min_ms"] = settings.barge_min_ms
@@ -157,13 +159,29 @@ async def conversation(ws: WebSocket):
                     return
                 pending_user, pending_answer, committed_turn = text, [], None
                 await emit("transcript", role="user", text=text)
-                messages = build_messages(history, text, settings.context - 2 * len(dialogue.instruction()) - 384)
+                evidence, sources = None, []
+                if settings.web_search:
+                    evidence, sources = await lookup(client, backends, history, text, dialogue)
+                else:
+                    evidence = {"status": "disabled", "message": "外部検索は設定で無効。最新情報は確認できない。"}
+                direct_reply = lookup_reply(evidence, dialogue)
+                extra = evidence_message(evidence)["content"] if evidence is not None else ""
+                messages = build_messages(history, text,
+                    settings.context - 2 * (len(dialogue.instruction()) + len(extra)) - 384)
+                if extra:
+                    messages[0]["content"] += "\n" + extra
                 queue = asyncio.Queue(maxsize=2)
                 parts = []
                 llm_start = perf_counter()
 
                 async def generate():
                     try:
+                        if direct_reply is not None:
+                            parts.append(direct_reply)
+                            await queue.put(direct_reply)
+                            metrics["llm_ms"] = 0
+                            await queue.put(None)
+                            return
                         async for chunk, ttft in backends.chat_stream(client, messages, dialogue=dialogue):
                             if chunk:
                                 parts.append(chunk)
@@ -200,6 +218,8 @@ async def conversation(ws: WebSocket):
                     raise RuntimeError("LLM returned an empty answer")
                 answer = "".join(parts)
                 await emit("transcript", role="assistant", text=answer)
+                if sources:
+                    await emit("sources", sources=sources)
                 metrics["server_ms"] = round((perf_counter() - started) * 1000 + vad_wait, 1)
                 history.extend([{"role": "user", "content": text}, {"role": "assistant", "content": answer}])
                 del history[:-40]

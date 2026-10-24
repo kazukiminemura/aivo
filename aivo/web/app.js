@@ -102,6 +102,23 @@ function addMessage(role, text) {
   body.append(speaker, content); row.append(avatar, body); $('transcript').append(row);
   $('transcript').scrollTop = $('transcript').scrollHeight;
 }
+function addSources(sources) {
+  const body = $('transcript').lastElementChild?.querySelector('.message-body');
+  if (!body) return;
+  const list = document.createElement('p'); list.className = 'sources';
+  list.append('参照元: ');
+  for (const source of sources.slice(0, 3)) {
+    try {
+      const url = new URL(source.url);
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) continue;
+      const link = document.createElement('a');
+      link.href = url.href; link.textContent = source.title;
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      list.append(link, ' ');
+    } catch { /* Ignore malformed provider links. */ }
+  }
+  body.append(list);
+}
 function showMetrics(metrics, playbackMs) {
   const entries = [
     ['VAD 終端待機（設定値）', metrics.vad_ms], ['音声認識', metrics.stt_ms],
@@ -195,6 +212,7 @@ async function receive(message, fromSocket) {
   }
   if (message.type === 'state' && states[message.state]) showState(message.state);
   if (message.type === 'transcript') addMessage(message.role, message.text);
+  if (message.type === 'sources' && Array.isArray(message.sources)) addSources(message.sources);
   if (message.type === 'error') {
     clearPlayback();
     error(message.message);
@@ -318,7 +336,7 @@ async function refresh() {
       : `未ロード（設定: ${health.stt_device} / ${health.stt_compute || 'auto'}）`;
     const gpuRuntime = health.gpu_loaded
       ? `GPU常駐 ${Math.round((health.size_vram || 0) / 1048576)} MiB` : 'GPU常駐なし';
-    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 音声割り込み: ${voiceInterruption ? '有効' : '未対応（サーバーを更新）'}`;
+    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / VOICEVOX speaker: ${health.speaker} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効' : '未対応（サーバーを更新）'}`;
     if (!ready) $('hint').textContent = protocolCurrent
       ? 'READMEの初期設定を完了し、サービスを起動して「再確認」を押してください。'
       : 'サーバーを再起動してから、この画面を再読み込みしてください。';
