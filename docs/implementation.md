@@ -2,9 +2,11 @@
 
 更新日: 2026-10-23。日本語会話の成立を優先したローカル音声会話MVPです。実機受け入れのチェックは、実施結果を記録するまで合格を意味しません。
 
+構造を知るには[開発者ガイド・現行アーキテクチャ](architecture.md)を先に参照してください。本書は設定と検証の手引きです。以下の過去の試験記録は、その時点の構成・実行環境に限られます。
+
 ## 処理と対話方針
 
-マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。faster-whisper smallがbeam size 3で日本語を認識し、履歴付きでOllamaへ渡します。LLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文だけをVOICEVOXへ渡し、文単位WAVを順番に再生します。
+マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。faster-whisper smallがbeam size 3で日本語を認識し、履歴付きでOllamaへ渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
 
 ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話で割り込めます。Processing / Preparing / Idleでは音声取得を止めます。常時すべての処理で同時対話する方式ではありません。停止・新規会話は旧ターンと保留音声を破棄します。STTはスレッド内で動くため、停止操作が推論自体の即時終了を保証するわけではありません。
 
@@ -32,6 +34,10 @@ ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話
 | `AIVO_KEEP_ALIVE` | `30m` | Ollamaのモデル常駐要求 |
 | `AIVO_VOICEVOX_URL` | `http://127.0.0.1:50021` | ローカルVOICEVOX Engine |
 | `AIVO_SPEAKER` | `3` | VOICEVOXスタイルID、初期設定はずんだもん |
+| `AIVO_TTS_BACKEND` | `auto` | 準備確認でVOICEVOXを優先し、利用不可なら端末音声。`voicevox` / `browser` の固定指定も可能 |
+| `AIVO_TTS_SPEED` | `1.0` | 読み上げ速度、0.5〜2.0。両TTS経路に適用 |
+| `AIVO_WEB_SEARCH` | `true` | 外部検索。送信内容とOFF運用はREADME・ADR-002を参照 |
+| `AIVO_SAVE_HISTORY` | `false` | 明示ON後に処理を開始した完成会話本文のみSQLite保存。保存時にもONであることを確認 |
 | `AIVO_VAD_THRESHOLD` | `0.5` | 発話確率しきい値、0.1〜0.95 |
 | `AIVO_SILENCE_MS` | `800` | 発話確定までの無音時間、200〜3000ms |
 | `AIVO_BARGE_THRESHOLD` | `0.65` | 読み上げ中の発話確率しきい値、0.1〜0.99 |

@@ -1,7 +1,7 @@
 # aivo 開発計画 v0.1
 
 - 更新日: 2026-10-23
-- 前提: [要件定義](requirements.md) と [当初のアーキテクチャ案](architecture.md)
+- 前提: [要件定義](requirements.md) と [現行アーキテクチャ](architecture.md)
 - 現状: ローカル音声経路と会話品質の修正を実装。実モデル・実音声の受け入れは未完了。
 
 現在の構成は[ADR-001](adr-001-local-mvp.md)に従うブラウザ標準API + FastAPI / WebSocketです。0.6B / baseで報告された反復応答・認識品質の問題を受け、既定をQwen3 4B Q4_K_M / Whisper small、無音800msへ戻しました。最終回答全体を検証した後の、文単位TTS・順次再生を維持しています。
@@ -50,7 +50,7 @@
 
 ## Phase 3: アプリ品質
 
-- [ ] SQLite履歴・削除・設定画面。
+- [x] SQLite履歴・削除・設定画面を実装。実ブラウザでの保存・削除・再起動反映の受け入れは未完了（[ADR-002](adr-002-acceptance-boundaries.md)）。
 - [ ] Windows / Ubuntuのインストール・更新・復旧手順を実機検証。
 - [ ] 60分安定性、障害回復、モデル・音声のライセンス確認。
 

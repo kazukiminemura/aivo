@@ -6,7 +6,7 @@
 
 ## 背景
 
-当初の[アーキテクチャ案](architecture.md)はReact、LiveKit / WebRTC、LiveKit Agentsを候補とし、構築負担が大きい場合はWebSocket代替案をADRとして記録する方針としていた。
+当初のアーキテクチャ案はReact、LiveKit / WebRTC、LiveKit Agentsを候補とし、構築負担が大きい場合はWebSocket代替案をADRとして記録する方針としていた。現在の[アーキテクチャ文書](architecture.md)は実装に合わせて更新しており、当初案との差分も記載する。
 
 まず発話認識→履歴付きローカルLLM→ローカルTTSを少ないプロセスで構築する。速度優先の0.6B / base設定では反復応答と認識品質の問題が報告されたため、既定を日本語会話の成立を優先する4B / smallへ戻す。実際の改善は別途確認する。
 
@@ -44,4 +44,6 @@ Listening / Speakingではマイク取得を継続し、ブラウザAECとサー
 
 割り込みの品質・エコー対策を改善する際や、遠隔端末・複数人利用の追加時にWebRTC / LiveKitを再評価する。判断には実機の初回再生遅延、停止時間、エコー誤検出、構築負担を使う。
 
-当初文書のReact / LiveKitは将来案として残す。現在の構成と検証は本ADRと[実装・検証メモ](implementation.md)を参照する。
+React / LiveKitは再検討候補として残す。現行構造は[開発者ガイド](architecture.md)、設定・検証は[実装メモ](implementation.md)を参照する。本ADRの接続内メモリ履歴・VOICEVOX中心の説明は採用当初の範囲であり、任意のSQLite保存とブラウザSpeechSynthesis経路が追加されている。現行の保存・外部送信・生成完了前発話の扱いは[ADR-002](adr-002-acceptance-boundaries.md)と開発者ガイドを優先する。
+
+技術ごとの目的、根拠のある選定理由、実装から推定した利点、代替案との違い・制約は[開発者ガイドの選定理由](architecture.md#9-主要実装の選定理由)に集約する。推定を当時の意思決定記録として扱わない。
