@@ -225,16 +225,16 @@ def test_nonfinite_audio_rejected(session):
         assert closed.value.code == 1008
 
 
-def test_ollama_stream_and_voicevox_contract():
+def test_ovms_stream_and_voicevox_contract():
     backend = Backends(Settings())
     seen = []
 
     def handler(request):
         seen.append(request.url.path)
-        if request.url.path == "/api/generate":
+        if request.url.path == "/v3/chat/completions":
             payload = json.loads(request.content)
-            assert payload["stream"] is True and payload["raw"] is True and "hello" in payload["prompt"]
-            return httpx.Response(200, text=json.dumps({"response": json.dumps({"reply": "hello world"}), "done": True}) + "\n")
+            assert payload["stream"] is True and payload["messages"][-1]["content"] == "hello"
+            return httpx.Response(200, text='data: ' + json.dumps({"choices": [{"delta": {"content": json.dumps({"reply": "hello world"})}}]}) + "\n\ndata: [DONE]\n")
         if request.url.path == "/audio_query":
             assert request.url.params["speaker"] == "3"
             return httpx.Response(200, json={"speedScale": 1})
@@ -249,7 +249,7 @@ def test_ollama_stream_and_voicevox_contract():
             assert answer == "hello world" and chunks[0][1] >= 0
             assert await backend.synthesize(client, answer) == b"RIFFtest"
     asyncio.run(run())
-    assert seen == ["/api/generate", "/audio_query", "/synthesis"]
+    assert seen == ["/v3/chat/completions", "/audio_query", "/synthesis"]
 
 def test_early_playback_ack_cannot_unlock_processing(session):
     client, fake = session

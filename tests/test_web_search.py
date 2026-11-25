@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -14,31 +15,45 @@ from test_final_response import immediate
 NOW = datetime(2026, 10, 24, 12, tzinfo=JST)
 
 
-class Client:
+class Client(httpx.AsyncClient):
     def __init__(self, plan, results=(), fail=False):
+        super().__init__(transport=httpx.MockTransport(self.handle))
         self.plan, self.results, self.fail = plan, iter(results), fail
         self.requests, self.posts = [], []
 
-    async def post(self, url, **kwargs):
-        self.posts.append(kwargs["json"])
-        return httpx.Response(200, json={"response": json.dumps(self.plan)}, request=httpx.Request("POST", url))
-
-    def stream(self, method, url, **kwargs):
-        self.requests.append((url, kwargs))
+    def handle(self, request):
+        if request.url.host == "127.0.0.1":
+            assert request.url.path == "/v3/chat/completions"
+            payload = json.loads(request.content)
+            self.posts.append(payload)
+            message = {"role": "assistant", "content": "完了"}
+            followup_query = self.plan.get("next_query") if len(self.posts) == 2 else None
+            if payload["messages"][-1]["role"] != "tool" or followup_query:
+                tool = self.plan.get("tool")
+                forced = payload.get("tool_choice")
+                if isinstance(forced, dict) or tool == "weather":
+                    name, args = "get_weather", {"location": self.plan.get("location", "")}
+                else:
+                    name = "search_web" if tool == "search" else tool
+                    args = {"query": followup_query or self.plan.get("query", "")}
+                message.update(content=None, tool_calls=[{"id": f"call{len(self.posts)}", "type": "function",
+                               "function": {"name": name, "arguments": json.dumps(args)}}])
+            return httpx.Response(200, json={"id": "test", "created": 1, "model": "local",
+                "object": "chat.completion", "choices": [{"index": 0, "message": message,
+                "finish_reason": "tool_calls" if "tool_calls" in message else "stop"}]})
+        self.requests.append((str(request.url.copy_with(query=None)), {"params": dict(request.url.params),
+                                                                     "follow_redirects": self.follow_redirects}))
         if self.fail:
             raise httpx.ConnectError("offline")
         data = next(self.results)
-        class Stream:
-            async def __aenter__(self): return self
-            async def __aexit__(self, *args): pass
-            def raise_for_status(self): pass
-            async def aiter_bytes(self):
-                yield (data if isinstance(data, str) else json.dumps(data)).encode()
-        return Stream()
+        return httpx.Response(200, text=data if isinstance(data, str) else json.dumps(data))
 
 
 def run(client, text, dialogue=None, history=None):
-    return immediate(lookup(client, Backends(Settings()), history or [], text, dialogue, NOW))
+    async def invoke():
+        async with client:
+            return await lookup(client, Backends(Settings()), history or [], text, dialogue, NOW)
+    return asyncio.run(invoke())
 
 
 def test_weather_followup_uses_state_and_exact_date_with_source():
@@ -56,8 +71,8 @@ def test_weather_followup_uses_state_and_exact_date_with_source():
     assert result["forecast"]["precipitation_probability_max"] == 30
     assert result["retrieved_at"] == NOW.isoformat()
     assert sources[0]["url"] == "https://open-meteo.com/"
-    assert "明日の花火" in client.posts[0]["prompt"]
-    assert "明日花火見たい" in client.posts[0]["prompt"]
+    assert "明日の花火" in str(client.posts[0]["messages"])
+    assert "明日花火見たい" in str(client.posts[0]["messages"])
     assert client.requests[1][1]["params"]["start_date"] == "2026-10-25"
     assert client.requests[1][1]["follow_redirects"] is False
 
@@ -121,11 +136,7 @@ def test_invalid_plan_cannot_choose_arbitrary_network_destination():
 def test_lookup_planner_has_no_conflicting_reply_contract():
     client = Client({"tool": "weather", "query": "", "location": "", "date": "2026-10-24"})
     result, _ = run(client, "今日の天気を教えて")
-    from aivo.web_search import plan_lookup
-    immediate(plan_lookup(client, Backends(Settings()), [], "今日の天気を教えて", None, NOW))
-    prompt = client.posts[0]["prompt"]
-    assert "reply" not in prompt
-    assert client.posts[0]["format"]["required"] == ["tool", "query", "location", "date"]
+    assert client.posts == []
     from aivo.web_search import lookup_reply
     state = DialogueState()
     assert lookup_reply(result, state) == "どの地域の天気を調べますか？"
@@ -197,7 +208,7 @@ def test_tokyo_today_calls_forecast_even_if_model_would_drop_location():
          "daily_units": {"temperature_2m_max": "°C", "wind_speed_10m_max": "m/s"}}])
     result, _ = run(client, "今日の東京の天気を教えてください", DialogueState())
     assert result["status"] == "ok" and result["requested_location"] == "東京"
-    assert client.posts == [], "Obvious weather questions must not depend on the LLM planner"
+    assert len(client.posts) == 1
     assert result["network_requests"] == [
         {"provider": "geocoding-api.open-meteo.com", "status": "completed"},
         {"provider": "api.open-meteo.com", "status": "completed"}]
@@ -216,10 +227,23 @@ def test_chuo_followup_uses_gsi_exact_area_and_keeps_original_day():
                    "temperature_2m_min": [14], "precipitation_probability_max": [20], "wind_speed_10m_max": [2]},
          "daily_units": {"temperature_2m_max": "°C", "wind_speed_10m_max": "m/s"}}])
     result, sources = run(client, "東京都中央区でお願いします", state)
-    assert result["status"] == "ok" and client.posts == []
+    assert result["status"] == "ok" and len(client.posts) == 1
     assert client.requests[1][0] == "https://msearch.gsi.go.jp/address-search/AddressSearch"
     assert client.requests[1][1]["params"]["q"] == "東京都中央区"
-    assert client.requests[2][1]["params"]["latitude"] == 35.671
+    assert client.requests[2][1]["params"]["latitude"] == "35.671"
     assert "東京都中央区" in lookup_reply(result, state)
     assert any("国土地理院" in s["title"] for s in sources)
     assert len(result["network_requests"]) == 3
+
+def test_runner_feeds_evidence_back_to_ovms_and_executes_followup_search():
+    html = '<a class="result__a" href="https://example.org/{}">{}</a>'
+    client = Client({"tool": "search", "query": "展示会", "next_query": "展示会 会期"},
+                    [html.format("one", "展示会情報"), html.format("two", "会期情報")])
+    result, sources = run(client, "展示会について検索して")
+    assert [request[1]["params"]["q"] for request in client.requests] == ["展示会", "展示会 会期"]
+    assert len(client.posts) == 3
+    for payload, title in zip(client.posts[1:], ["展示会情報", "会期情報"]):
+        message = payload["messages"][-1]
+        assert message["role"] == "tool" and title in message["content"]
+    assert result["status"] == "ok"
+    assert [s["url"] for s in sources] == ["https://example.org/one", "https://example.org/two"]

@@ -53,7 +53,7 @@ async def index():
 async def health():
     status = await readiness(settings)
     status["web_search"] = settings.web_search
-    status["lookup_revision"] = 2
+    status["lookup_revision"] = 3
     status["voice_interruption"] = True
     status["barge_threshold"] = settings.barge_threshold
     status["barge_min_ms"] = settings.barge_min_ms
@@ -80,9 +80,9 @@ async def get_settings():
         async def model_options():
             nonlocal models
             try:
-                response = await client.get(settings.ollama + "/api/tags")
+                response = await client.get(settings.ovms + "/v3/models")
                 response.raise_for_status()
-                models = [m["name"] for m in response.json().get("models", [])]
+                models = [m["id"] for m in response.json().get("data", [])]
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 pass
         async def voice_options():
@@ -359,9 +359,9 @@ async def conversation(ws: WebSocket):
             pending_user, pending_answer = None, []
             barge.reset()
             if isinstance(exc, httpx.HTTPStatusError):
-                message = f"Local service HTTP {exc.response.status_code}. Check Ollama / VOICEVOX."
+                message = f"Local service HTTP {exc.response.status_code}. Check OVMS / VOICEVOX."
             elif isinstance(exc, (httpx.RequestError, TimeoutError)):
-                message = "Local service unavailable or timed out. Check Ollama / VOICEVOX."
+                message = "Local service unavailable or timed out. Check OVMS / VOICEVOX."
             else:
                 message = str(exc) if isinstance(exc, RuntimeError) else "音声処理に失敗しました。モデルと実行デバイスを確認してください。"
             logger.warning("session=%s turn=%s error=%s", session_id, turn_id, type(exc).__name__)

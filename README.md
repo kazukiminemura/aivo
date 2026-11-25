@@ -1,6 +1,6 @@
 # aivo
 
-ローカルPCで動く日本語の音声会話アシスタントです。マイク入力を認識し、Ollamaで返答を生成して、VOICEVOXまたは端末の日本語ローカル音声で読み上げます。任意のインターネット検索で天気予報やWeb検索結果を取得できます。
+ローカルPCで動く日本語の音声会話アシスタントです。マイク入力を認識し、OpenVINO Model Server（OVMS）で返答を生成して、VOICEVOXまたは端末の日本語ローカル音声で読み上げます。任意のインターネット検索で天気予報やWeb検索結果を取得できます。
 
 **状態：v0.1 MVP開発中。実装済み機能と実機での受け入れ合格は別です。** 自然な会話、応答速度、対応OSすべてでの安定動作はまだ保証していません。
 
@@ -19,7 +19,7 @@
 
 ## 使用モデルと構成
 
-Issue #4・#9に記録された実機構成は **`qwen3.5:9b`（Q4_K_M）** です。以下の起動例も9Bに合わせています。ただし、コードと`.env.example`のフォールバック値は`qwen3:4b`のままです。`.env`がない場合やモデルを指定しない場合は4Bになるため、9Bを使うには明示的な設定が必要です。
+OVMSが会話と調査に必要なLLM推論を担当します。OpenAI Agents SDKはOVMSが選んだ検索ツールを呼び出し、その結果をOVMSに戻して、追加検索または調査終了まで進行します。
 
 | 機能 | 実装・設定 |
 | --- | --- |
@@ -27,7 +27,8 @@ Issue #4・#9に記録された実機構成は **`qwen3.5:9b`（Q4_K_M）** で�
 | API・音声転送 | FastAPI、WebSocket |
 | 発話区間検出 | Silero VAD、無音待機800ms |
 | 音声認識 | faster-whisper `small`。CUDA `int8_float16`を自動選択し、利用不可ならCPU `int8` |
-| LLM | 実機検証構成：`qwen3.5:9b`。コードの既定値：`qwen3:4b` |
+| LLM推論 | OVMSのChat Completions API。モデル名は `AIVO_LLM_MODEL` で指定 |
+| 調査の進行 | OpenAI Agents SDKのRunner。一般検索は1件の依頼につき最大3回 |
 | コンテキスト | 4096トークン。履歴・意味状態・取得結果のための予算を考慮 |
 | 出力上限 | `AIVO_MAX_TOKENS=192`。意味状態も生成する場合は384を追加、最大2048 |
 | 音声合成 | VOICEVOX（speaker 3）または端末の日本語ローカル音声 |
@@ -35,29 +36,36 @@ Issue #4・#9に記録された実機構成は **`qwen3.5:9b`（Q4_K_M）** で�
 | 一般検索 | DuckDuckGo HTML検索 |
 | 会話の保存 | 既定は接続中のみ。任意でローカルSQLiteへ本文を保存。モデル用履歴は最大20往復を上限に予算内で使用 |
 
-モデル・量子化・実行デバイスは端末の設定によって変わります。`ollama list`、`ollama ps`、画面の「設定 → 応答時間・実行構成」で確認してください。4bitのLLMを使っても、音声認識や音声合成までINT4になるわけではありません。
+利用可能なモデルIDはOVMSの `GET /v3/models` で確認できます。量子化と実行デバイスはOVMS側で設定します。
 
 ## セットアップ
 
 主な受け入れ対象はWindowsです。Ubuntu 24.04も対応要件に含まれますが、検証は別枠で未完了です。
 
-Python 3.11〜3.13、[uv](https://docs.astral.sh/uv/)、[Ollama](https://ollama.com/)を用意してください。[VOICEVOX](https://voicevox.hiroshiba.jp/)は任意です。ブラウザはChromeまたはEdgeを使用します。初回の依存パッケージ・モデル取得にはインターネット接続が必要です。
+Python 3.11〜3.13と[uv](https://docs.astral.sh/uv/)を用意してください。Windows x64ではセットアップがOVMS本体も導入します。Ubuntuでは[OVMS](https://docs.openvino.ai/2026/model-server/ovms_docs_llm_reference.html)を別途用意してください。[VOICEVOX](https://voicevox.hiroshiba.jp/)は任意です。ブラウザはChromeまたはEdgeを使用します。初回の依存パッケージ・モデル取得にはインターネット接続が必要です。
 
 リポジトリのルートで実行します。
 
 ```console
 uv sync
-uv run python -m aivo.setup
-ollama list
+uv run python -m aivo.setup --llm
 ```
 
-音声認識モデルを`models/whisper-small`へ取得します。Ollamaに使用する9Bモデルがない場合は、Ollamaの起動後に取得します。
+このコマンドは音声認識モデルに加え、OVMS用のQwen3-4B（INT4、約2.3 GB）を `models/Qwen3-4B` に取得します。音声認識モデルだけを取得する場合は `--llm` を省略してください。[Qwen3-4Bの配布ファイル](https://huggingface.co/OpenVINO/Qwen3-4B-int4-ov/tree/main)
+
+Windows x64では、`--llm` がOVMS 2026.4.1の公式ZIPを取得し、SHA-256を確認してプロジェクト内の `.runtime` に展開します。モデルを取得済みでOVMS本体だけ必要な場合は `uv run python -m aivo.setup --ovms` を実行してください。
+
+Windowsではリポジトリのルートで次を実行し、この端末を開いたままにします。起動スクリプトが同梱のOVMSと設定済みのモデルを使います。
 
 ```console
-ollama pull qwen3.5:9b
+.\start-ovms.cmd
 ```
 
-`uv run python -m aivo.setup --llm`でも設定済みのLLMを取得できます。
+UbuntuでのOVMS起動例：
+
+```console
+ovms --model_path models/Qwen3-4B --model_name Qwen3-4B --task text_generation --rest_bind_address 127.0.0.1 --rest_port 8001 --tool_parser hermes3 --reasoning_parser qwen3
+```
 
 初めて設定ファイルを作る場合だけ、次を実行してください。既存の`.env`は上書きしないでください。
 
@@ -74,15 +82,16 @@ cp .env.example .env
 必要な値だけ編集します。既存のモデル設定は自動変更しません。モデルを切り替える場合は取得済みのモデル名を指定してください。
 
 ```dotenv
-AIVO_LLM_MODEL=qwen3.5:9b
+AIVO_OVMS_URL=http://127.0.0.1:8001
+AIVO_LLM_MODEL=Qwen3-4B
 AIVO_WEB_SEARCH=true
 ```
 
-`.env.example`をコピーした後は、上記の`AIVO_LLM_MODEL=qwen3.5:9b`へ変更してください。9Bでの実機試験は限定的で、モデルの大型化だけで意味品質の問題が解消したとは判定していません。
+`AIVO_LLM_MODEL` はOVMSで公開したモデルIDに合わせます。既存の `.env` を使う場合もこの値を確認してください。
 
 ## 起動と操作
 
-1. Ollamaを起動します。必要なら別のターミナルで`ollama serve`を実行します。
+1. OVMSを起動し、`http://127.0.0.1:8001/v3/models` に設定したモデルIDがあることを確認します。
 2. VOICEVOXは任意です。使用する場合だけアプリまたはEngineを`http://127.0.0.1:50021`で起動します。未起動時は端末標準の日本語ローカル音声を使用します。
 3. aivoを起動します。
 
@@ -133,7 +142,7 @@ uv run uvicorn aivo.server:app --host 127.0.0.1 --port 8000 --ws-max-size 8192
 AIVO_WEB_SEARCH=false
 ```
 
-この設定ではアプリの外部検索処理を呼びません。OllamaとVOICEVOXの接続先はループバックHTTPに制限しています。オフラインでの実音声10ターンや復旧の受け入れ試験は未完了であり、端末全体の外部通信を遮断する設定ではありません。
+この設定ではアプリの外部検索処理を呼びません。OVMSとVOICEVOXの接続先はループバックHTTPに制限しています。オフラインでの実音声10ターンや復旧の受け入れ試験は未完了であり、端末全体の外部通信を遮断する設定ではありません。
 
 ## テストと実機確認
 
@@ -144,7 +153,7 @@ uv run pytest
 node --test aivo/web/lifecycle.test.cjs aivo/web/microphone.test.cjs
 ```
 
-ローカルOllamaの会話・訂正・記憶の限定確認：
+ローカルOVMSの会話・訂正・記憶の限定確認：
 
 ```console
 uv run python -m aivo.check_conversation
@@ -153,12 +162,12 @@ uv run python -m aivo.check_conversation --scenario weather
 
 このweatherシナリオは**外部APIを呼ばないテキスト試験**です。一般的な会話品質や実際の天気取得の合格を示すものではありません。
 
-ローカルOllamaと実天気APIを使う限定確認：
+ローカルOVMSと実天気APIを使う限定確認：
 
 ```console
 uv run python -m aivo.check_web
 # 取得済みモデルを指定して比較する場合
-uv run python -m aivo.check_web --model qwen3.5:9b
+uv run python -m aivo.check_web --model Qwen3-4B
 ```
 
 地域なし→東京、東京都の今日、大阪市の明日を試し、取得データ・日付・状態・参照元・ケースごとの合否を出力します。マイク・実再生・一般検索・検索OFF・キャンセル・長期安定性はこのコマンドの対象外です。
@@ -167,7 +176,7 @@ uv run python -m aivo.check_web --model qwen3.5:9b
 
 Issue #4・#9の回帰対応時点では、選択したPythonテスト128件と17 subtests、ブラウザ側16件が通過しています。全受け入れ条件の合格を意味しません。
 
-今回の実行環境ではローカルOllamaへのアクセス拒否と外部APIの名前解決エラーを確認しました。実通信チェックは完走できず、修正後の実モデル・実通信の受け入れは未完了です。Issueに記録された過去の限定的な成功と、今回の修正後の検証は区別してください。
+旧構成での実機試験結果は、OVMSでの会話品質や応答時間の検証には含めていません。
 
 [実機受け入れ手順](docs/implementation.md#実機受け入れチェック)で、音声10ターン、障害復旧、検索OFF、割り込みも個別に確認してください。UIの応答時間はサーバー計測の概算を含み、発話終了から実再生までの遅延と同一ではありません。
 
@@ -177,7 +186,7 @@ Issue #4・#9の回帰対応時点では、選択したPythonテスト128件と1
 
 - 認識文が違う：マイクとSTTを確認。スピーカー音声の混入が疑われる場合はヘッドホンで比較します。
 - 天気が取れない：検索設定、地域・日付、外部通信を確認。`lookup_failed stage=... error=...`のログで分類処理と外部取得を区別します。
-- モデルや設定が変わらない：サーバーを再起動し、新しい会話を開始。`ollama ps`と画面の実行構成を確認します。
+- モデルや設定が変わらない：サーバーを再起動し、新しい会話を開始。`GET /v3/models`と画面の実行構成を確認します。
 - GPUメモリ不足：他アプリの使用量も確認。aivoは他アプリを自動停止しません。
 
 ## 開発・受け入れ管理

@@ -66,7 +66,9 @@ def mock_client(events, requests):
 
         async def aiter_lines(self):
             for event in events:
-                yield json.dumps(event)
+                yield "data: " + json.dumps({"choices": [{"delta": {"content": event.get("response"), "reasoning_content": event.get("thinking")}}]})
+                if event.get("done"):
+                    yield "data: [DONE]"
 
     def stream(method, url, **kwargs):
         requests.append((url, kwargs["json"]))
@@ -74,7 +76,7 @@ def mock_client(events, requests):
     return SimpleNamespace(stream=stream)
 
 
-def test_raw_qwen3_request_ends_after_closed_thinking_prefix_and_preserves_history():
+def test_ovms_request_preserves_history_and_reply_schema():
     messages = [
         {"role": "system", "content": "日本語で会話してください。"},
         {"role": "user", "content": "猫の名前はこむぎです。"},
@@ -83,15 +85,11 @@ def test_raw_qwen3_request_ends_after_closed_thinking_prefix_and_preserves_histo
     ]
     before = [dict(message) for message in messages]
     path, payload = Backends(Settings(llm="qwen3:4b")).generation_request(messages)
-    assert path == "/api/generate"
-    assert payload["raw"] is True and payload["think"] is False
-    assert payload["stream"] is True
-    assert payload["prompt"].endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
-    assert payload["prompt"].index("猫の名前はこむぎです。") < payload["prompt"].index("こむぎちゃんですね。") < payload["prompt"].index("今の猫の名前は？")
-    assert payload["format"]["properties"]["reply"]["type"] == "string"
-    assert payload["format"]["required"] == ["reply"]
-    assert payload["format"]["additionalProperties"] is False
-    assert "<|im_end|>" in payload["options"]["stop"]
+    assert path == "/v3/chat/completions"
+    assert payload["messages"][1:] == messages[1:]
+    assert payload["response_format"]["json_schema"]["schema"]["properties"]["reply"]["type"] == "string"
+    assert payload["response_format"]["json_schema"]["schema"]["required"] == ["reply"]
+    assert payload["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
     assert messages == before
 
 
@@ -101,10 +99,7 @@ def test_literal_chat_tokens_in_utterance_cannot_create_new_roles():
         {"role": "system", "content": "会話してください。"},
         {"role": "user", "content": text},
     ])
-    prompt = payload["prompt"]
-    assert prompt.count("<|im_start|>") == 3  # Only real system/user/assistant roles.
-    assert "猫の名前は" in prompt and "秘密です。" in prompt
-    assert text not in prompt
+    assert payload["messages"][-1] == {"role": "user", "content": text}
 
 
 def test_valid_json_is_buffered_and_only_reply_is_yielded():
@@ -128,7 +123,9 @@ def test_valid_json_is_buffered_and_only_reply_is_yielded():
         async def aiter_lines(self):
             for event in events:
                 observed.append(event)
-                yield json.dumps(event)
+                yield "data: " + json.dumps({"choices": [{"delta": {"content": event.get("response"), "reasoning_content": event.get("thinking")}}]})
+                if event.get("done"):
+                    yield "data: [DONE]"
 
     def stream(method, url, **kwargs):
         original_stream(method, url, **kwargs)
@@ -140,7 +137,7 @@ def test_valid_json_is_buffered_and_only_reply_is_yielded():
     assert first == "こんにちは！"
     with pytest.raises(StopAsyncIteration):
         immediate(output.__anext__())
-    assert requests[0][0].endswith("/api/generate")
+    assert requests[0][0].endswith("/v3/chat/completions")
 
 
 @pytest.mark.parametrize("raw", [
@@ -159,12 +156,11 @@ def test_invalid_generated_output_raises_before_any_text_chunk(raw):
 def test_other_models_use_native_chat_with_the_same_final_reply_contract(model):
     messages = [{"role": "system", "content": "会話してください。"}, {"role": "user", "content": "こんにちは"}]
     path, payload = Backends(Settings(llm=model)).generation_request(messages)
-    assert path == "/api/chat"
+    assert path == "/v3/chat/completions"
     assert [message["role"] for message in payload["messages"]] == ["system", "user"]
     assert payload["messages"][-1] == messages[-1]
     assert payload["messages"][0]["content"].startswith(messages[0]["content"])
     assert "reply" in payload["messages"][0]["content"]
     assert "raw" not in payload and "prompt" not in payload
-    assert payload["format"]["properties"]["reply"]["type"] == "string"
-    assert payload["format"]["additionalProperties"] is False
-    assert payload["think"] is False
+    assert payload["response_format"]["json_schema"]["schema"]["properties"]["reply"]["type"] == "string"
+    assert payload["response_format"]["json_schema"]["schema"]["additionalProperties"] is False

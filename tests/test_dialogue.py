@@ -25,9 +25,9 @@ def test_intent_location_correction_and_reset_cross_generation_boundary():
     first["facts"].append("outside mutation")
     assert "outside mutation" not in dialogue.value["facts"]
     _, payload = backend.generation_request(build_messages([], "東京", 4096), dialogue)
-    assert "明日花火を見に行きたい" in payload["prompt"]
-    assert "場所はどこ？" in payload["prompt"]
-    assert payload["format"]["required"] == ["reply", "state"]
+    assert "明日花火を見に行きたい" in payload["messages"][0]["content"]
+    assert "場所はどこ？" in payload["messages"][0]["content"]
+    assert payload["response_format"]["json_schema"]["schema"]["required"] == ["reply", "state"]
     corrected = dict(dialogue.value, facts=["日付:明日", "地域:横浜（東京から訂正）"],
                      unresolved=["最新の天気予報"], question="", status="answering")
     dialogue.accept_response(response(corrected, "横浜だね。最新の予報は確認できないから、開催情報も確認してね。"))

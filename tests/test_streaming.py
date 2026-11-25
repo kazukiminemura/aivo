@@ -33,15 +33,15 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(speech_chunks("\n\n ", final=True), ([], ""))
 
     def test_q4_request_buffers_complete_validated_reply_before_playback(self):
-        settings = Settings(llm="qwen3:0.6b-q4_K_M", max_tokens=128, context=2048, keep_alive="30m")
+        settings = Settings(llm="qwen3:0.6b-q4_K_M", max_tokens=128, context=2048)
         consumed, requests = [], []
         class Stream:
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
             def raise_for_status(self): pass
             async def aiter_lines(self):
-                for line in [json.dumps({"response": '{"reply":"First!'}),
-                             json.dumps({"response": 'Second!"}', "done": True})]:
+                for line in ['data: ' + json.dumps({"choices": [{"delta": {"content": part}}]})
+                             for part in ['{"reply":"First!', 'Second!"}']] + ['data: [DONE]']:
                     consumed.append(line)
                     yield line
         class Client:
@@ -51,14 +51,12 @@ class StreamingTests(unittest.TestCase):
         stream = Backends(settings).chat_stream(Client(), [])
         first = immediate(stream.__anext__())
         self.assertEqual(first[0], "First!")
-        self.assertEqual(len(consumed), 2, "no output before complete JSON validation")
+        self.assertEqual(len(consumed), 3, "no output before complete JSON validation")
         self.assertEqual(immediate(stream.__anext__())[0], "Second!")
         with self.assertRaises(StopAsyncIteration): immediate(stream.__anext__())
         request = requests[0]
         self.assertEqual(request["model"], "qwen3:0.6b-q4_K_M")
-        self.assertFalse(request["think"])
-        self.assertEqual(request["options"], {"num_predict": 128, "num_ctx": 2048, "temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.1, "stop": ["<|im_end|>", "<|im_start|>"]})
-        self.assertEqual(request["keep_alive"], "30m")
+        self.assertEqual(request["max_tokens"], 128)
 
     def test_truncated_stream_raises_instead_of_committing_a_partial_answer(self):
         class Stream:

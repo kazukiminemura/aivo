@@ -1,4 +1,4 @@
-"""Text-only regression check against the configured local Ollama (no STT/TTS).
+"""Text-only regression check against the configured local OVMS (no STT/TTS).
 
 Run: uv run python -m aivo.check_conversation
 This is a narrow smoke check, not a general model-quality benchmark.
@@ -14,7 +14,7 @@ from time import perf_counter
 import httpx
 from dotenv import load_dotenv
 
-from aivo.backends import Backends
+from aivo.backends import Backends, completion_delta
 from aivo.answer import parse_final_answer
 from aivo.dialogue import DialogueState
 from aivo.core import Settings, build_messages
@@ -85,23 +85,18 @@ def stream_reply(client, settings, messages, dialogue=None):
     backend = Backends(settings)
     path, payload = backend.generation_request(messages, dialogue)
     started, first, parts, done = perf_counter(), None, [], False
-    with client.stream("POST", settings.ollama + path, json=payload) as response:
+    with client.stream("POST", settings.ovms + path, json=payload) as response:
         response.raise_for_status()
         for line in response.iter_lines():
-            if not line:
-                continue
-            event = json.loads(line)
-            if event.get("error"):
-                raise RuntimeError(f"Ollama: {event['error']}")
-            token = event.get("response", "") if path == "/api/generate" else event.get("message", {}).get("content", "")
+            token, finished = completion_delta(line)
+            if finished:
+                done = True
+                break
             if token and first is None:
                 first = (perf_counter() - started) * 1000
             parts.append(token)
-            if event.get("done"):
-                done = True
-                break
     if not done:
-        raise RuntimeError("Ollama stream ended before completion")
+        raise RuntimeError("OVMS stream ended before completion")
     answer = dialogue.accept_response("".join(parts), user_messages=[m["content"] for m in messages if m["role"] == "user"]) if dialogue is not None else parse_final_answer("".join(parts))
     return answer, {"ttft_ms": round(first or 0, 1),
                                     "total_ms": round((perf_counter() - started) * 1000, 1)}
@@ -110,12 +105,7 @@ def stream_reply(client, settings, messages, dialogue=None):
 def run_checks(client, settings, output=print, scenario="memory", stateful=False):
     dialogue = DialogueState() if stateful else None
     turns = WEATHER_TURNS if scenario == "weather" else TURNS
-    details = client.post(settings.ollama + "/api/show", json={"model": settings.llm})
-    details.raise_for_status()
-    output(json.dumps({"requested_model": settings.llm,
-                       "quantization": details.json().get("details", {}).get("quantization_level"),
-                       "requested_context": settings.context,
-                       "generation_options": Backends(settings).llm_options()}, ensure_ascii=False))
+    output(json.dumps({"requested_model": settings.llm, "requested_context": settings.context}))
     history, replies = [], []
     for index, text in enumerate(turns, 1):
         budget = settings.context - 2 * len(dialogue.instruction()) - 384 if dialogue is not None else settings.context
@@ -125,13 +115,6 @@ def run_checks(client, settings, output=print, scenario="memory", stateful=False
         replies.append(answer)
         output(json.dumps({"turn": index, "user": text, "assistant": answer, **timing}, ensure_ascii=False))
         history.extend([{"role": "user", "content": text}, {"role": "assistant", "content": answer}])
-    loaded = client.get(settings.ollama + "/api/ps")
-    loaded.raise_for_status()
-    observed = [model for model in loaded.json().get("models", [])
-                if model.get("name") in {settings.llm, settings.llm + ":latest"}]
-    output(json.dumps({"observed_loaded_models": [
-        {key: model.get(key) for key in ("name", "context_length", "size_vram")}
-        for model in observed], "note": "null means the engine did not report this field"}, ensure_ascii=False))
     failures = weather_failures(turns, replies) if scenario == "weather" else regression_failures(turns, replies)
     for failure in failures:
         output("FAIL: " + failure)

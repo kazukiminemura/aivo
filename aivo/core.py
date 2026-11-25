@@ -22,8 +22,8 @@ class Settings:
     stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "models/whisper-small"))
     stt_device: str = field(default_factory=lambda: os.getenv("AIVO_STT_DEVICE", "auto"))
     stt_compute: str = field(default_factory=lambda: os.getenv("AIVO_STT_COMPUTE", "auto"))
-    ollama: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OLLAMA_URL", "http://127.0.0.1:11434")))
-    llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "qwen3:4b"))
+    ovms: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OVMS_URL", "http://127.0.0.1:8001")))
+    llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "Qwen3-4B"))
     voicevox: str = field(default_factory=lambda: local_url(os.getenv("AIVO_VOICEVOX_URL", "http://127.0.0.1:50021")))
     tts_backend: str = field(default_factory=lambda: os.getenv("AIVO_TTS_BACKEND", "auto"))
     speed: float = field(default_factory=lambda: float(os.getenv("AIVO_TTS_SPEED", "1.0")))
@@ -36,7 +36,6 @@ class Settings:
 
     max_tokens: int = field(default_factory=lambda: int(os.getenv("AIVO_MAX_TOKENS", "192")))
     context: int = field(default_factory=lambda: int(os.getenv("AIVO_CONTEXT", "4096")))
-    keep_alive: str = field(default_factory=lambda: os.getenv("AIVO_KEEP_ALIVE", "30m"))
 
     barge_threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_BARGE_THRESHOLD", ".65")))
     barge_min_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_BARGE_MIN_MS", "160")))
@@ -48,7 +47,7 @@ class Settings:
             raise ValueError("TTS speed: 0.5-2.0; speaker: 0-100000")
         if not .1 <= self.barge_threshold <= .99 or not 64 <= self.barge_min_ms <= 1000:
             raise ValueError("Barge-in threshold: 0.1-0.99; speech duration: 64-1000 ms")
-        self.ollama = local_url(self.ollama)
+        self.ovms = local_url(self.ovms)
         self.voicevox = local_url(self.voicevox)
         if not 32 <= self.max_tokens <= 2048 or not 1024 <= self.context <= 32768:
             raise ValueError("max_tokens: 32-2048; context: 1024-32768")

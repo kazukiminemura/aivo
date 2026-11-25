@@ -20,7 +20,7 @@ def test_readiness_can_use_browser_without_voicevox(monkeypatch, mode, engine_re
             if url.endswith("/speakers"):
                 if not engine_ready: raise httpx.ConnectError("not running")
                 return httpx.Response(200, json=[{"styles": [{"id": 3}]}], request=httpx.Request("GET", url))
-            return httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url))
+            return httpx.Response(200, json={"data": [{"id": Settings().llm}]}, request=httpx.Request("GET", url))
     async def gather(*coroutines, return_exceptions=False):
         values = []
         for coroutine in coroutines:

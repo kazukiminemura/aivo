@@ -71,26 +71,14 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
             checks[name] = outcome
             return None
 
-    shown = request("ollama_model", "POST", settings.ollama + "/api/show", json={"model": settings.llm})
-    quantization = None
-    if shown is not None:
-        if not isinstance(shown, dict) or shown.get("error"):
-            checks["ollama_model"] = {"status": "failed", "error": "InvalidModelResponse"}
-        else:
-            details = shown.get("details", {})
-            if not isinstance(details, dict):
-                checks["ollama_model"] = {"status": "failed", "error": "InvalidModelDetails"}
-            else:
-                quantization = details.get("quantization_level")
-    loaded = request("ollama_processes", "GET", settings.ollama + "/api/ps")
+    catalog = request("ovms_model", "GET", settings.ovms + "/v3/models")
     observed = []
-    if loaded is not None:
-        if not isinstance(loaded, dict) or not isinstance(loaded.get("models"), list):
-            checks["ollama_processes"] = {"status": "failed", "error": "InvalidProcessResponse"}
-        else:
-            for item in loaded["models"]:
-                if isinstance(item, dict) and item.get("name") in {settings.llm, settings.llm + ":latest"}:
-                    observed.append({key: item.get(key) for key in ("name", "context_length", "size_vram")})
+    if catalog is not None:
+        models = catalog.get("data") if isinstance(catalog, dict) else None
+        if isinstance(models, list):
+            observed = [m for m in models if isinstance(m, dict) and m.get("id") == settings.llm]
+        if not observed:
+            checks["ovms_model"] = {"status": "failed", "error": "ConfiguredModelMissing"}
     speakers = request("voicevox_speaker", "GET", settings.voicevox + "/speakers")
     if speakers is not None:
         valid = isinstance(speakers, list) and any(
@@ -128,7 +116,7 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
                           "stt_device": settings.stt_device, "stt_compute": settings.stt_compute,
                           "speaker": settings.speaker, "web_search": settings.web_search,
                           "context": settings.context, "max_tokens": settings.max_tokens},
-        "checks": checks, "quantization": quantization, "loaded_models": observed,
+        "checks": checks, "quantization": None, "loaded_models": observed,
         "running_configuration": effective,
     }
 

@@ -136,18 +136,17 @@ test('warmup failure stops microphone state and server Idle acknowledges cleanup
   assert.equal(h.timers.size, 0);
 });
 
-test('configuration displays actual precision and GPU allocation; first-audio timing is a server estimate', async () => {
+test('configuration displays STT precision and the configured OVMS model; first-audio timing is a server estimate', async () => {
   const h = harness();
   h.sandbox.fetch = async () => ({ok: true, json: async () => ({
-    ready: true, stt: true, ollama: true, voicevox: true, voice_interruption: true, response_protocol: 'final-json-v1', runtime_id: 'abc12345',
+    ready: true, stt: true, ovms: true, voicevox: true, voice_interruption: true, response_protocol: 'final-json-v1', runtime_id: 'abc12345',
     stt_model: 'whisper', stt_device: 'auto', actual_stt_device: 'cuda', actual_stt_compute: 'int8_float16',
-    llm_model: 'qwen', quantization: 'Q4_K_M', gpu_loaded: true, size_vram: 1073741824, speaker: 3,
+    llm_model: 'qwen', speaker: 3,
   })});
   await vm.runInContext('refresh()', h.ctx);
   const configuration = h.nodes.get('configuration').textContent;
   assert.match(configuration, /cuda \/ int8_float16/);
-  assert.match(configuration, /Q4_K_M/);
-  assert.match(configuration, /1024 MiB/);
+  assert.match(configuration, /OVMS \/ qwen/);
   assert.match(configuration, /final-json-v1/);
   assert.match(configuration, /abc12345/);
   vm.runInContext('showMetrics({first_audio_ready_ms: 185}, 4)', h.ctx);
@@ -183,7 +182,7 @@ test('legacy server without final response validation is clearly identified and 
   const h = harness();
   vm.runInContext('running = false', h.ctx);
   h.sandbox.fetch = async () => ({ok: true, json: async () => ({
-    ready: true, stt: true, ollama: true, voicevox: true,
+    ready: true, stt: true, ovms: true, voicevox: true,
     stt_model: 'whisper', stt_device: 'cpu', llm_model: 'qwen', speaker: 3,
   })});
   await vm.runInContext('refresh()', h.ctx);
@@ -193,7 +192,7 @@ test('legacy server without final response validation is clearly identified and 
   assert.match(h.nodes.get('error').textContent, /旧バージョン：サーバーの再起動が必要/);
   assert.ok(h.nodes.get('services').children.some((node) => node.textContent.includes('旧バージョン')));
   h.sandbox.fetch = async () => ({ok: true, json: async () => ({ready: true,
-    response_protocol: 'final-json-v1', runtime_id: 'reloaded', stt: true, ollama: true, voicevox: true,
+    response_protocol: 'final-json-v1', runtime_id: 'reloaded', stt: true, ovms: true, voicevox: true,
   })});
   await vm.runInContext('refresh()', h.ctx);
   assert.equal(vm.runInContext('ready', h.ctx), true);

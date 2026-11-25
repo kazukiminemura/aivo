@@ -1,4 +1,4 @@
-"""Live acceptance checks for #4/#9; requires local Ollama and the internet.
+"""Live acceptance checks for #4/#9; requires local OVMS and the internet.
 
 Run: uv run python -m aivo.check_web
 All prompts are synthetic. Prints actual results, never equates mocks with live PASS.
@@ -51,7 +51,7 @@ async def run(settings, output=print):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", help="Local Ollama model override")
+    parser.add_argument("--model", help="Local OVMS model override")
     args = parser.parse_args()
     load_dotenv(encoding="utf-8-sig")
     settings = Settings()

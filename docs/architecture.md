@@ -19,7 +19,7 @@ flowchart LR
     U[利用者]
     subgraph PC[利用者のPC]
         A["aivo<br/>ブラウザ画面 + Pythonアプリ"]
-        O["Ollama<br/>ローカルLLM"]
+        O["OVMS<br/>ローカルLLM"]
         V["VOICEVOX Engine<br/>任意のローカルTTS"]
         S["ブラウザ・OSの日本語ローカル音声<br/>SpeechSynthesis"]
         D[("SQLite / .env / モデルファイル")]
@@ -40,7 +40,7 @@ flowchart LR
     A <-->|検索語 / HTTPS| Q
 ```
 
-- 音声認識とVADはPythonアプリ内、LLMはOllama、TTSはVOICEVOXまたはブラウザ・OSで実行する。クラウド推論APIは実装していない。
+- 音声認識とVADはPythonアプリ内、LLMはOVMS、TTSはVOICEVOXまたはブラウザ・OSで実行する。クラウド推論APIは実装していない。
 - **外部検索は既定ON**。送信語句には会話から抽出した情報が含まれ得る。`AIVO_WEB_SEARCH=false` でアプリの外部検索経路を止める。端末全体の通信を遮断する設定ではない。
 - Open-Meteoの地名検索で日本の行政区名が見つからない場合、国土地理院を補助利用する。一般検索は抜粋とリンクを取得するだけで、検索先ページの本文・公開日時は取得・検証しない。
 - 図のネット通信は実行時検索の範囲。初回の依存・モデル取得は [setup.py](../aivo/setup.py) とREADMEの明示的なセットアップで別途行う。
@@ -69,23 +69,25 @@ flowchart TB
         FLOW -->|生成結果全体| VALID
         VALID -->|検証済み本文| API
     end
-    O["別サービス / Ollama<br/>既定 127.0.0.1:11434"]
+    O["別サービス / OVMS<br/>既定 127.0.0.1:8001"]
     V["別サービス / VOICEVOX<br/>既定 127.0.0.1:50021"]
     EXT["外部HTTPS<br/>Open-Meteo・国土地理院・DuckDuckGo"]
     DB[("data/history.sqlite3<br/>任意の会話本文保存")]
     UI <-->|"同一Origin HTTP / 既定 :8000<br/>画面・health・設定・保存履歴"| API
     UI -->|"/ws バイナリPCM + JSON制御"| API
     API -->|"/ws JSONイベント<br/>WAVはBase64 / 端末TTSは本文"| UI
-    FLOW <-->|ループバックHTTP / 分類・会話生成| O
-    FLOW <-->|必要時のみ検索| EXT
+    FLOW <-->|ループバックHTTP / 会話生成| O
+    FLOW --> SDK[OpenAI Agents SDK / Runner]
+    SDK <-->|調査中の推論| O
+    SDK <-->|検索ツール| EXT
     API <-->|ループバックHTTP / 本文からWAV生成| V
     API -->|保存ONかつ本文完成時| DB
 ```
 
-枠は実行領域を表す。ブラウザやOllama等の内部OSプロセス数は規定しない。AudioWorkletはブラウザの音声処理領域であり、独立したaivoサーバーではない。SQLiteは組み込みライブラリで、DBサーバーの起動は不要。実装には分離したAgentプロセスやUIビルド工程はない。
+枠は実行領域を表す。ブラウザやOVMS等の内部OSプロセス数は規定しない。AudioWorkletはブラウザの音声処理領域であり、独立したaivoサーバーではない。SQLiteは組み込みライブラリで、DBサーバーの起動は不要。実装には分離したAgentプロセスやUIビルド工程はない。
 
 - **入力**: マイク → AudioWorklet → `app.js` → `/ws`。PCMは16 kHz・モノラル・little-endian float32、1フレーム512サンプル（32 ms / 2,048 bytes）。サーバーは長さ・有限値・振幅を検証する。
-- **推論**: Silero VADの確率 → `Segmenter` → STT → 必要なら外部取得 → 通常会話ではOllamaの最終回答。VADモデルは接続ごと、WhisperモデルとSTTロックは共有する。重いSTT処理は `asyncio.to_thread()` へ渡す。
+- **推論**: Silero VADの確率 → `Segmenter` → STT → 必要なら外部取得 → 通常会話ではOVMSの最終回答。VADモデルは接続ごと、WhisperモデルとSTTロックは共有する。重いSTT処理は `asyncio.to_thread()` へ渡す。
 - **出力**: 通常会話は生成全体の検証後に `speech_chunks()` で本文を分割する。VOICEVOX経路はWAV、端末音声経路は `speech` イベントの本文・速度を送る。外部取得の固定返答は現在 `process()` の直接返答経路へ渡すため、通常会話と同じ分割を通るとは限らない。
 - **TTS選択**: `auto` は準備確認時に指定話者のVOICEVOXが使えればVOICEVOX、それ以外は `browser`。`browser` はVOICEVOX確認・ウォームアップ・合成を省く。`voicevox` 固定ではVOICEVOXを必須とする。選択後の合成エラーで途中から端末音声へ自動再試行する実装ではない。
 - ブラウザ側は `localService=true` の日本語音声だけを使い、見つからなければ開始を許可しない。サーバーの `ready` だけでは端末での再生可能性まで確認できない。
@@ -135,9 +137,9 @@ flowchart TB
 | --- | --- |
 | [server.py](../aivo/server.py) | アプリ生成、静的配信、HTTP API、`conversation()` 内の接続状態と処理タスク。セッション管理専用クラスはなく、内部関数とローカル変数で調停する |
 | [core.py](../aivo/core.py) | 環境変数を読む `Settings`、ループバックURLの検証、`Segmenter`、完全な往復単位で予算に収める `build_messages()`、本文分割 |
-| [backends.py](../aivo/backends.py) | STTモデルの遅延ロード・CUDA自動選択とCPU退避、Ollamaリクエスト生成・全出力受信、VOICEVOX合成、準備確認 |
+| [backends.py](../aivo/backends.py) | STTモデルの遅延ロード・CUDA自動選択とCPU退避、OVMSリクエスト生成・全出力受信、VOICEVOX合成、準備確認 |
 | [dialogue.py](../aivo/dialogue.py) / [answer.py](../aivo/answer.py) | JSON形状・長さ・重複キー・禁止タグの検証、意味状態の確定。factsをユーザー発言の原文や以前の引用根拠に照合する。意味全体の正しさの保証ではない |
-| [web_search.py](../aivo/web_search.py) | 明示天気のコード側抽出、必要時のローカルLLM分類、日付解決、固定HTTPS取得先、検索HTML解析、`lookup_reply()` の固定返答と天気状態更新 |
+| [web_search.py](../aivo/web_search.py) | 明示天気のコード側抽出、Agents SDKの検索ツールと調査ループ、日付解決、固定HTTPS取得先、検索HTML解析、`lookup_reply()` の固定返答と天気状態更新 |
 | [barge_in.py](../aivo/barge_in.py) | 読み上げ中の連続発話判定と先頭音声保持。音響エコー除去器ではない |
 | [history.py](../aivo/history.py) / [preferences.py](../aivo/preferences.py) | SQLite本文保存・読出し・削除、設定値検証、既存の無関係な値を保った `.env` の一時ファイル置換 |
 | [web/app.js](../aivo/web/app.js) / [web/microphone.js](../aivo/web/microphone.js) | 開始・停止・入力ゲート、WAVデコードと再生、端末音声の順序・完了管理、古い非同期結果の排除、設定・保存履歴画面 |
@@ -145,7 +147,7 @@ flowchart TB
 
 ### 外部取得の分岐
 
-`lookup()` はトリガー語や保留状態を見て判定する。明示天気は `direct_weather_plan()`、それ以外の必要な分類は `plan_lookup()` からローカルOllamaを呼ぶ。日付はモデル生成値をそのまま採用せず、`explicit_day()` / `resolve_weather_plan()` で日本時間の発言日付・保留日付に基づき解決する。
+`lookup()` は発言と保留状態から調査の要否を判定する。明示された天気依頼で地域・日付が不足すれば聞き返す。調査時にはSDKがOVMSのツール呼び出しを実行し、天気の日付は発言と保留状態から解決する。
 
 天気、検索抜粋、地域・日付の確認、取得失敗は `lookup_reply()` が本文を組み立て、通常の会話LLMに再生成させない。一般検索の抜粋もモデルによる要約ではない。外部取得対象でない場合は通常会話へ進む。検索OFF時も、その旨の外部情報を通常会話の指示へ加える。取得結果をユーザーのfactsとして扱わない。
 
@@ -245,7 +247,7 @@ classDiagram
 
 ## 5. 起動から1往復の会話まで
 
-1. READMEのセットアップで依存とモデルを用意し、Ollamaと必要ならVOICEVOXを起動する。`uv run uvicorn aivo.server:app --host 127.0.0.1 --port 8000 --ws-max-size 8192` でaivoを起動する。
+1. READMEのセットアップで依存とモデルを用意し、OVMSと必要ならVOICEVOXを起動する。`uv run uvicorn aivo.server:app --host 127.0.0.1 --port 8000 --ws-max-size 8192` でaivoを起動する。
 2. `server.py` のインポート時に `.env` → `Settings` → 共有 `Backends` / `HistoryStore` / FastAPIを生成する。環境変数は `.env` より優先。ここではSQLiteファイルを作成しない。
 3. ブラウザが `/` と `/static/*` を読み、`refresh()` → `/api/health` → `readiness()` でモデルファイル・サービス・TTS経路を確認する。UIは `final-json-v1` と端末音声の有無も確認する。`runtime_id` はプロセス識別用で、音声イベントのターン識別子とは別。
 4. 「会話を開始」で `start()` がWebSocket、マイク、AudioContext、Workletを用意して `start` を送る。サーバーは `Preparing`、`Backends.prepare()` でSTT無音推論・LLM事前ロード・選択時だけVOICEVOXウォームアップを行い、VADを用意して `Listening` を通知する。
@@ -257,7 +259,7 @@ sequenceDiagram
     participant UI as ブラウザ / Worklet
     participant WS as server.conversation
     participant B as Backends
-    participant L as Ollama
+    participant L as OVMS
     participant X as 外部HTTPSサービス
     participant T as VOICEVOX または端末音声
     participant H as HistoryStore
@@ -269,8 +271,8 @@ sequenceDiagram
     B-->>WS: 日本語認識文
     WS-->>UI: transcript user
     opt 外部検索ONかつ取得対象
-        WS->>WS: lookup / コード抽出またはローカルLLM分類
-        Note over WS,L: 分類が必要な場合はOllamaを呼ぶ
+        WS->>WS: lookup / 必要ならAgents SDKで調査
+        Note over WS,L: SDKはOVMSで推論し、検索ツールを実行する
         opt 地域・日付等が揃い外部取得が必要
             WS->>X: 固定URLへのGET
             X-->>WS: 天気データまたは検索HTML
@@ -280,7 +282,7 @@ sequenceDiagram
     end
     alt 固定返答がない通常会話
         WS->>B: chat_stream(messages, dialogue)
-        B->>L: /api/generate または /api/chat
+        B->>L: /v3/chat/completions
         L-->>B: 生成JSON全体をストリームで受信
         B->>B: 最終回答・意味状態の検証と更新
         B-->>WS: 検証後に本文を分割して返す
@@ -315,7 +317,7 @@ sequenceDiagram
     WS-->>UI: state Listening
 ```
 
-- `Backends.generation_request()` はモデル名の基底が `qwen3` のとき `/api/generate` のrawプロンプト、それ以外は `/api/chat` を使う。`qwen3.5:9b` は後者。モデル名の違いだけで品質合格とは扱わない。
+- `Backends.generation_request()` はOVMSの `/v3/chat/completions` に会話履歴と応答スキーマを渡す。
 - `chat_stream()` という名前でも、UI/TTSへ未検証のLLMトークンを逐次流す処理ではない。LLM生成完了前の発話は[ADR-002](adr-002-acceptance-boundaries.md)によりMVPで延期している。
 - `process()` 全体と準備には180秒の上限がある。通常停止はタスクをキャンセルし、入力・再生の古い結果を破棄する。STTスレッドの推論自体を即時終了する保証はない。
 - サーバーの `tts_ms` はVOICEVOX合成時間。端末TTSでは `null`。`first_audio_ready_ms` は送信可能時点の概算で、ユーザー発話終了から実音声出力までの実測とは異なる。
@@ -403,17 +405,14 @@ FastAPIは [TrustedHostMiddlewareとOrigin検証](../aivo/server.py)、ローカ
 - **実装からの推定**: [Segmenter](../aivo/core.py)がVAD確率・無音時間で区間を確定し、[Backends.transcribe()](../aivo/backends.py)がその区間だけを日本語認識することで、発話終了と認識モデルの役割を分けられる。ローカルファイル限定ロードは推論中のモデル取得を避け、CUDA自動選択とCPU退避はGPU実行が利用できない場合の経路を残す。
 - **代替案・制約**: 固定時間録音だけの区切り方とは異なり、無音待機を増減すると待ち時間と発話の分断に影響する。既定800 msが全環境で最適とは判定していない。STTはスレッドと共有ロックで同時推論を抑えるため、キャンセルしても推論自体は即時終了しない。コードコメントにある強制キャンセル用のプロセス分離は未実装。VADは話者識別や音響エコー除去の代わりにはならない。
 
-### Ollamaとモデル設定：ローカル推論を設定で切り替える
+### OVMSとOpenAI Agents SDKの役割
 
-- **記録された判断**: [FR-04](requirements.md)はローカルOllamaを指定し、[ADR-001](adr-001-local-mvp.md)は既存モデルの再利用と会話品質を優先する既定値を記録している。Qwen3でrawプロンプトを使う理由は、旧テンプレートの思考開始タグが `think:false` だけでは回避できなかったため、と[コードコメント](../aivo/backends.py)と[実装メモ](implementation.md)に明記されている。
-- **実装からの推定**: OllamaをHTTPで呼ぶことで、アプリにLLMのロード・GPU配置の実装を直接組み込まず、`Settings.llm` と生成リクエストでモデル指定をまとめられる。`prepare()` の事前ロードと常駐要求は会話開始前に準備を行う構造だが、遅延目標の達成を証明するものではない。
-- **既定値と試験設定**: コードと `.env.example` の既定は `qwen3:4b`、READMEにあるローカル試験構成は明示指定の `qwen3.5:9b`。モデル名は設定可能で、前者のraw経路を後者にも使うわけではない。出力・文脈・常駐の既定値と意味状態用の追加予算は[設定一覧](implementation.md)と[生成処理](../aivo/backends.py)を参照する。Q4_K_M等は実際の取得モデルを確認し、aivo全体の量子化方式と混同しない。
-- **代替案・制約**: llama.cpp / OpenVINO等は[開発計画](development-plan.md)の将来候補で、現行の交換可能な実装としては提供していない。大きいモデルほど会話品質や速度が良いという比較結果はなく、VRAM・CUDA互換性・応答の意味品質は実構成で確認する。
+会話と調査の推論はOVMSで実行する。通常会話ではJSON Schemaを指定し、調査ではAgents SDKのRunnerが関数ツールを公開する。Runnerは検索結果を次の推論に渡し、追加検索または終了を処理する。検索時のトレース送信は無効。表示する参照元は検索ツールが取得したURLから組み立てる。
 
 ### 完成応答JSONの検証：未検証の生成文を読み上げない
 
 - **記録された判断**: [ADR-002の最終回答検証](adr-002-acceptance-boundaries.md)は思考文や不正JSONの漏出防止を優先し、全生成後の検証を採用する。元の「LLM生成完了前の再生」はMVPで延期している。
-- **実装からの推定**: [generation_request() / chat_stream()](../aivo/backends.py)でJSONを要求し、[parse_final_answer()](../aivo/answer.py)や[DialogueState.accept_response()](../aivo/dialogue.py)で重複キー・形状・禁止タグ等を確認してから本文を渡すことで、モデルへの形式指定だけに依存しない境界を作っている。Qwen3固有のraw経路も、この検証を迂回しない。
+- **実装からの推定**: [generation_request() / chat_stream()](../aivo/backends.py)でJSONを要求し、[parse_final_answer()](../aivo/answer.py)や[DialogueState.accept_response()](../aivo/dialogue.py)で重複キー・形状・禁止タグ等を確認してから本文を渡すことで、モデルへの形式指定だけに依存しない境界を作っている。
 - **代替案・制約**: 未検証トークンを直接TTSへ流す方式より、初回発話まで待つ必要がある。検証後の本文分割・順次合成と、LLM生成途中の読み上げは別。JSONやfactsの引用根拠が正しくても、返答全体の意味・自然さまで保証しない。
 
 ### VOICEVOXとブラウザTTS：ローカル音声に二つの経路を用意する
@@ -425,7 +424,7 @@ FastAPIは [TrustedHostMiddlewareとOrigin検証](../aivo/server.py)、ローカ
 ### 天気・検索：取得結果の値と参照元を保って返す
 
 - **記録された判断**: [ADR-002](adr-002-acceptance-boundaries.md)は利用依頼に基づく外部取得の既定ONと送信内容の開示を記録する。[実装メモの固定処理・回帰対応](implementation.md)は、天気の取得値と検索抜粋を通常会話LLMに再生成させず、数値・単位の言い換えを避ける扱いを記録している。
-- **実装からの推定**: [web_search.py](../aivo/web_search.py)の明示天気のコード側抽出、発言日付の解決、必要時のLLM分類は、取得対象と自由会話を分けるための構造と読める。Open-Meteoの地名・予報、国土地理院の行政区補助、DuckDuckGoのHTML抜粋という固定経路に限定し、任意URLやリダイレクトを辿らず、取得量・時間を制限することで取得対象を絞っている。
+- **実装からの推定**: [web_search.py](../aivo/web_search.py)の明示天気のコード側抽出、発言日付の解決、SDKによるツール選択は、取得対象と自由会話を分けるための構造と読める。Open-Meteoの地名・予報、国土地理院の行政区補助、DuckDuckGoのHTML抜粋という固定経路に限定し、任意URLやリダイレクトを辿らず、取得量・時間を制限することで取得対象を絞っている。
 - **代替案・制約**: 検索先本文を巡回するRAGや、LLMが自由にURLを選ぶエージェント方式ではない。一般検索は抜粋・公開日時が未検証で、HTML変更や取得先の停止に影響される。地名候補や日付が不足すれば確認へ戻り、取得失敗を推測で補完しない。プロバイダーの網羅的な比較選定記録はなく、特定サービスが最良との主張はしない。
 
 ### 会話状態とモデル用履歴：対話の目的と入力予算を接続内で保つ

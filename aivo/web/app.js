@@ -438,7 +438,7 @@ async function refresh() {
     ready = health.ready && protocolCurrent && (ttsBackend !== "browser" || !!localJapaneseVoice());
     if (!protocolCurrent && running) stop();
     $('services').replaceChildren();
-    for (const [key, name] of [['stt', '音声認識'], ['ollama', 'Ollama'], ['voicevox', 'VOICEVOX']]) {
+    for (const [key, name] of [['stt', '音声認識'], ['ovms', 'OVMS'], ['voicevox', 'VOICEVOX']]) {
       const tag = document.createElement('span'); tag.className = `service ${(health[key] || (key === 'voicevox' && ttsBackend === 'browser' && localJapaneseVoice())) ? 'ready' : ''}`;
       tag.textContent = key === 'voicevox' && ttsBackend === 'browser' ? '読み上げ：端末標準（VOICEVOX不要）' : `${name} ${health[key] ? '準備完了' : '未準備'}`; $('services').append(tag);
     }
@@ -459,9 +459,7 @@ async function refresh() {
     const sttRuntime = health.actual_stt_device
       ? `${health.actual_stt_device} / ${health.actual_stt_compute || '不明'}（実行）`
       : `未ロード（設定: ${health.stt_device} / ${health.stt_compute || 'auto'}）`;
-    const gpuRuntime = health.gpu_loaded
-      ? `GPU常駐 ${Math.round((health.size_vram || 0) / 1048576)} MiB` : 'GPU常駐なし';
-    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: ${health.llm_model} [${health.quantization || '量子化不明'}, ${gpuRuntime}] / 読み上げ: ${ttsBackend === "browser" ? "端末の日本語ローカル音声" : `VOICEVOX speaker ${health.speaker}`} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 検索処理: ${health.lookup_revision || "旧版"} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効（自動）' : '無効（サーバー未対応）'}`;
+    $('configuration').textContent = `STT: ${health.stt_model} [${sttRuntime}] / LLM: OVMS / ${health.llm_model} / 読み上げ: ${ttsBackend === "browser" ? "端末の日本語ローカル音声" : `VOICEVOX speaker ${health.speaker}`} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 検索処理: ${health.lookup_revision || "旧版"} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効（自動）' : '無効（サーバー未対応）'}`;
     if (!ready) $('hint').textContent = protocolCurrent
       ? 'READMEの初期設定を完了し、サービスを起動して「再確認」を押してください。'
       : 'サーバーを再起動してから、この画面を再読み込みしてください。';

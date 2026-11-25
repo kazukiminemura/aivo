@@ -14,15 +14,11 @@ def test_latest_correction_and_ordered_history_reach_chat_request():
     answers = ["こむぎちゃんですね。", "次に何をしたいですか？", "あずきちゃんに訂正します。", "猫じゃらしがおすすめです。", "あずき"]
 
     def handler(request):
-        if request.url.path == "/api/show":
-            return httpx.Response(200, json={"details": {"quantization_level": "Q4_K_M"}})
-        if request.url.path == "/api/ps":
-            return httpx.Response(200, json={"models": [{"name": "qwen3:4b", "context_length": 4096, "size_vram": 2000}]})
-        assert request.url.path == "/api/generate"
+        assert request.url.path == "/v3/chat/completions"
         payload = json.loads(request.content)
         requests.append(payload)
         answer = answers[len(requests) - 1]
-        return httpx.Response(200, text=json.dumps({"response": json.dumps({"reply": answer}), "done": True}) + "\n")
+        return httpx.Response(200, text='data: ' + json.dumps({"choices": [{"delta": {"content": json.dumps({"reply": answer})}}]}) + "\n\ndata: [DONE]\n")
 
     settings = Settings(llm="qwen3:4b", context=4096)
     output = []
@@ -30,20 +26,13 @@ def test_latest_correction_and_ordered_history_reach_chat_request():
         assert run_checks(client, settings, output.append)
     assert len(requests) == 5
     final = requests[-1]
-    prompt = final["prompt"]
-    assert final["raw"] is True
-    assert prompt.startswith("<|im_start|>system\n")
-    assert prompt.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    prompt = "\n".join(m["content"] for m in final["messages"])
     positions = [prompt.index(text) for text in TURNS]
     assert positions == sorted(positions)
     answer_positions = [prompt.index(text) for text in answers[:-1]]
     assert answer_positions == sorted(answer_positions)
     assert prompt.index(TURNS[-1]) > answer_positions[-1]
-    assert final["think"] is False and final["stream"] is True
-    assert final["options"] == Backends(settings).generation_request([])[1]["options"]
-    assert final["options"]["num_ctx"] == 4096
-    assert any('"quantization": "Q4_K_M"' in line for line in output)
-    assert any('"context_length": 4096' in line for line in output)
+    assert final["stream"] and final["max_tokens"] == settings.max_tokens
 
 
 def test_prompt_guides_conversation_and_does_not_mutate_history():
@@ -71,7 +60,7 @@ def test_model_error_does_not_become_a_canned_answer():
     def handler(request):
         if request.url.path == "/api/show":
             return httpx.Response(200, json={"details": {}})
-        return httpx.Response(200, text='{"error":"model failed"}\n')
+        return httpx.Response(200, text='data: {"error":"model failed"}\n')
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(RuntimeError, match="model failed"):
             run_checks(client, Settings(), output=lambda line: None)
