@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from aivo import ovms
 from aivo.backends import Backends, readiness
 from aivo.answer import parse_final_answer
 from aivo.barge_in import BargeIn
@@ -59,8 +60,6 @@ async def health():
     status["barge_min_ms"] = settings.barge_min_ms
     status["response_protocol"] = RESPONSE_PROTOCOL
     status["runtime_id"] = RUNTIME_ID
-    status["actual_stt_device"] = backends.actual_stt_device
-    status["actual_stt_compute"] = backends.actual_stt_compute
     return status
 
 
@@ -80,9 +79,8 @@ async def get_settings():
         async def model_options():
             nonlocal models
             try:
-                response = await client.get(settings.ovms + "/v3/models")
-                response.raise_for_status()
-                models = [m["id"] for m in response.json().get("data", [])]
+                ids = await ovms.model_ids(client, settings.ovms)
+                models = [model for model in ids if model != settings.stt_model]
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 pass
         async def voice_options():
@@ -249,7 +247,7 @@ async def conversation(ws: WebSocket):
             async with asyncio.timeout(180):
                 await emit("state", state="Processing")
                 audio = np.frombuffer(raw, dtype="<f4").copy()
-                text = await asyncio.to_thread(backends.transcribe, audio)
+                text = await backends.transcribe(client, audio)
                 metrics["stt_ms"] = round((perf_counter() - started) * 1000, 1)
                 if not text:
                     active = False
@@ -351,9 +349,8 @@ async def conversation(ws: WebSocket):
                 pending_user, pending_answer = None, []
                 awaiting_playback = True
                 await emit("audio_end", metrics=metrics)
-                logger.info("session=%s turn=%s device=%s compute=%s llm=%s metrics=%s", session_id, turn_id,
-                            getattr(backends, "actual_stt_device", settings.stt_device),
-                            getattr(backends, "actual_stt_compute", settings.stt_compute), settings.llm, metrics)
+                logger.info("session=%s turn=%s stt=%s llm=%s metrics=%s", session_id, turn_id,
+                            settings.stt_model, settings.llm, metrics)
         except Exception as exc:
             active = awaiting_playback = playback_pending = False
             pending_user, pending_answer = None, []

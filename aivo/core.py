@@ -19,9 +19,7 @@ def local_url(value):
 
 @dataclass
 class Settings:
-    stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "models/whisper-small"))
-    stt_device: str = field(default_factory=lambda: os.getenv("AIVO_STT_DEVICE", "auto"))
-    stt_compute: str = field(default_factory=lambda: os.getenv("AIVO_STT_COMPUTE", "auto"))
+    stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "whisper-small").replace("\\", "/").removeprefix("models/"))
     ovms: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OVMS_URL", "http://127.0.0.1:8001")))
     llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "Qwen3-4B"))
     voicevox: str = field(default_factory=lambda: local_url(os.getenv("AIVO_VOICEVOX_URL", "http://127.0.0.1:50021")))
@@ -51,8 +49,6 @@ class Settings:
         self.voicevox = local_url(self.voicevox)
         if not 32 <= self.max_tokens <= 2048 or not 1024 <= self.context <= 32768:
             raise ValueError("max_tokens: 32-2048; context: 1024-32768")
-        if self.stt_device not in {"auto", "cpu", "cuda"}:
-            raise ValueError("STT device must be auto, cpu, or cuda")
         if not .1 <= self.threshold <= .95 or not 200 <= self.silence_ms <= 3000:
             raise ValueError("VAD threshold: 0.1-0.95; silence: 200-3000 ms")
 

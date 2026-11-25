@@ -20,7 +20,7 @@ def test_readiness_can_use_browser_without_voicevox(monkeypatch, mode, engine_re
             if url.endswith("/speakers"):
                 if not engine_ready: raise httpx.ConnectError("not running")
                 return httpx.Response(200, json=[{"styles": [{"id": 3}]}], request=httpx.Request("GET", url))
-            return httpx.Response(200, json={"data": [{"id": Settings().llm}]}, request=httpx.Request("GET", url))
+            return httpx.Response(200, json={"data": [{"id": Settings().llm}, {"id": Settings().stt_model}]}, request=httpx.Request("GET", url))
     async def gather(*coroutines, return_exceptions=False):
         values = []
         for coroutine in coroutines:
@@ -31,7 +31,6 @@ def test_readiness_can_use_browser_without_voicevox(monkeypatch, mode, engine_re
         return values
     monkeypatch.setattr("aivo.backends.httpx.AsyncClient", lambda **kwargs: Client())
     monkeypatch.setattr("aivo.backends.asyncio.gather", gather)
-    monkeypatch.setattr("aivo.backends.Path.is_file", lambda self: True)
     status = immediate(readiness(Settings(tts_backend=mode)))
     assert status["voicevox"] == engine_ready
     assert status["tts_backend"] == expected and status["ready"] == ready

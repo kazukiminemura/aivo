@@ -1,80 +1,22 @@
 import asyncio
-import json
-import logging
-import threading
-from pathlib import Path
 from time import perf_counter
 
 import httpx
+import numpy as np
 
-from aivo.core import speech_chunks
+from aivo import ovms
 from aivo.answer import parse_final_answer
+from aivo.core import speech_chunks
 from aivo.dialogue import STATE_SCHEMA
-
-logger = logging.getLogger("aivo")
-
-
-def completion_delta(line):
-    if not line.startswith("data:"):
-        return "", False
-    data = line[5:].strip()
-    if data == "[DONE]":
-        return "", True
-    event = json.loads(data)
-    if event.get("error"):
-        raise RuntimeError(f"OVMS: {event['error']}")
-    choices = event.get("choices", [])
-    if not choices:
-        return "", False
-    return choices[0]["delta"].get("content") or "", False
+from aivo.ovms import completion_delta  # Existing diagnostic import.
 
 
 class Backends:
     def __init__(self, settings):
         self.settings = settings
-        self.model = None
-        self.actual_stt_device = None
-        self.actual_stt_compute = None
-        # One STT worker: use a process if hard cancellation is required.
-        self.lock = threading.Lock()
 
-    def _load_stt(self, force_cpu=False):
-        from faster_whisper import WhisperModel
-        import ctranslate2
-        path = Path(self.settings.stt_model)
-        if not path.is_dir():
-            raise RuntimeError("STT model missing. Run: uv run python -m aivo.setup")
-        device = self.settings.stt_device
-        if force_cpu:
-            device = "cpu"
-        elif device == "auto":
-            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-        compute = self.settings.stt_compute
-        if compute == "auto" or force_cpu:
-            compute = "int8_float16" if device == "cuda" else "int8"
-        self.model = WhisperModel(str(path), device=device, compute_type=compute, local_files_only=True)
-        self.actual_stt_device, self.actual_stt_compute = device, compute
-        logger.info("stt_loaded device=%s compute=%s model=%s", device, compute, path)
-
-    def transcribe(self, audio):
-        with self.lock:
-            def run():
-                if self.model is None:
-                    self._load_stt()
-                segments, _ = self.model.transcribe(audio, language="ja", beam_size=3, best_of=1,
-                    vad_filter=False, condition_on_previous_text=False, temperature=0,
-                    without_timestamps=True)
-                return "".join(segment.text for segment in segments).strip()
-            try:
-                return run()
-            except RuntimeError:
-                # CUDA libraries can fail only on first inference, after successful model load.
-                if self.settings.stt_device != "auto" or self.actual_stt_device == "cpu":
-                    raise
-                self.model = None
-                logger.warning("STT auto CUDA unavailable; falling back to CPU int8")
-                self._load_stt(force_cpu=True)
-                return run()
+    async def transcribe(self, client, audio):
+        return await ovms.transcribe(client, self.settings.ovms, self.settings.stt_model, audio)
 
     def generation_request(self, messages, dialogue=None, *, response_schema=None, response_instruction=None):
         # Enforce an answer envelope at decoding time, then validate it before
@@ -102,17 +44,11 @@ class Backends:
                    "temperature": 0.4, "top_p": 0.9, "chat_template_kwargs": {"enable_thinking": False},
                    "max_tokens": min(2048, self.settings.max_tokens + (384 if dialogue else 0)),
                    "response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}}
-        return "/v3/chat/completions", payload
+        return ovms.CHAT_PATH, payload
 
     async def prepare(self, client, tts_backend="voicevox"):
-        import numpy as np
-        async def preload_llm():
-            response = await client.post(self.settings.ovms + "/v3/chat/completions", json={
-                "model": self.settings.llm, "messages": [{"role": "user", "content": "はい"}], "max_tokens": 1})
-            response.raise_for_status()
-        # Load kernels before Listening, including CUDA DLLs used only by STT inference.
-        tasks = [asyncio.create_task(asyncio.to_thread(self.transcribe, np.zeros(8000, dtype=np.float32))),
-                 asyncio.create_task(preload_llm())]
+        tasks = [asyncio.create_task(self.transcribe(client, np.zeros(8000, dtype=np.float32))),
+                 asyncio.create_task(ovms.preload_llm(client, self.settings.ovms, self.settings.llm))]
         if tts_backend == "voicevox":
             tasks.append(asyncio.create_task(self.synthesize(client, "はい。")))
         try:
@@ -124,28 +60,18 @@ class Backends:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def chat_stream(self, client, messages, dialogue=None):
-        started, first, size, done, raw = perf_counter(), None, 0, False, []
+        started = perf_counter()
         path, payload = self.generation_request(messages, dialogue)
-        async with client.stream("POST", self.settings.ovms + path, json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                token, finished = completion_delta(line)
-                if finished:
-                    done = True
-                    break
-                if token and first is None:
-                    first = (perf_counter() - started) * 1000
-                size += len(token)
-                if size > 12000:
-                    raise RuntimeError("LLM output exceeded the response limit")
-                raw.append(token)
-        if not done:
-            raise RuntimeError("OVMS stream ended before completion")
-        answer = dialogue.accept_response("".join(raw), user_messages=[m["content"] for m in messages if m["role"] == "user"]) if dialogue is not None else parse_final_answer("".join(raw))
+        raw, first_token_ms = await ovms.read_completion(client, self.settings.ovms + path, payload, started)
+        if dialogue is None:
+            answer = parse_final_answer(raw)
+        else:
+            user_messages = [m["content"] for m in messages if m["role"] == "user"]
+            answer = dialogue.accept_response(raw, user_messages=user_messages)
         # Validation must finish before the first chunk can reach UI/TTS/history.
         parts, _ = speech_chunks(answer, final=True)
         for part in parts:
-            yield part, round(first or 0, 1)
+            yield part, first_token_ms
 
     async def chat(self, client, messages):
         parts, ttft = [], 0
@@ -173,17 +99,16 @@ class Backends:
 
 
 async def readiness(settings):
-    model = Path(settings.stt_model)
-    result = {"stt": all((model / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json")),
+    result = {"stt": False, "stt_backend": "ovms",
               "ovms": False, "voicevox": False, "llm_model": settings.llm,
               "speaker": settings.speaker, "stt_model": settings.stt_model,
-              "stt_device": settings.stt_device, "stt_compute": settings.stt_compute, "quantization": None,
+              "quantization": None,
               "gpu_loaded": None, "size_vram": None}
     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
         async def check_ovms():
-            response = await client.get(settings.ovms + "/v3/models")
-            response.raise_for_status()
-            result["ovms"] = any(m["id"] == settings.llm for m in response.json()["data"])
+            ids = await ovms.model_ids(client, settings.ovms)
+            result["ovms"] = settings.llm in ids
+            result["stt"] = settings.stt_model in ids
         async def check_voicevox():
             response = await client.get(settings.voicevox + "/speakers")
             response.raise_for_status()

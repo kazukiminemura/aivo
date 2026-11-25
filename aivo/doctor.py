@@ -13,9 +13,6 @@ from dotenv import load_dotenv
 from aivo.core import Settings, local_url
 
 
-REQUIRED_STT = ("model.bin", "config.json", "tokenizer.json")
-
-
 def git_state(root):
     try:
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
@@ -43,19 +40,7 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
     """Return explicit outcomes; passed prerequisites do not mean accepted voice quality."""
     app_url = local_url(app_url)
     root = Path(root or Path.cwd())
-    model = Path(settings.stt_model)
-    if not model.is_absolute():
-        model = root / model
-    missing = [name for name in REQUIRED_STT if not (model / name).is_file() or (model / name).stat().st_size == 0]
-    checks = {"python_runtime": {"status": "passed" if (3, 11) <= sys.version_info[:2] < (3, 14) else "failed"},
-              "stt_files": {"status": "failed" if missing else "passed", "missing": missing}}
-    if missing:
-        checks["stt_files"]["recovery"] = {
-            "command": ["uv", "run", "python", "-m", "aivo.setup", "--model",
-                        model.name.removeprefix("whisper-") if model.name.startswith("whisper-") else "<intended-whisper-size>",
-                        "--output", settings.stt_model],
-            "note": "Explicit download requires internet. Confirm the intended Whisper size before running; restart aivo afterward.",
-        }
+    checks = {"python_runtime": {"status": "passed" if (3, 11) <= sys.version_info[:2] < (3, 14) else "failed"}}
 
     def request(name, method, url, **kwargs):
         try:
@@ -73,12 +58,14 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
 
     catalog = request("ovms_model", "GET", settings.ovms + "/v3/models")
     observed = []
-    if catalog is not None:
-        models = catalog.get("data") if isinstance(catalog, dict) else None
-        if isinstance(models, list):
-            observed = [m for m in models if isinstance(m, dict) and m.get("id") == settings.llm]
-        if not observed:
-            checks["ovms_model"] = {"status": "failed", "error": "ConfiguredModelMissing"}
+    models = catalog.get("data") if isinstance(catalog, dict) else None
+    if isinstance(models, list):
+        observed = [m for m in models if isinstance(m, dict) and m.get("id") in {settings.llm, settings.stt_model}]
+    model_ids = {m["id"] for m in observed}
+    checks["ovms_stt"] = dict(checks["ovms_model"])
+    for key, name in (("ovms_model", settings.llm), ("ovms_stt", settings.stt_model)):
+        if catalog is not None and name not in model_ids:
+            checks[key] = {"status": "failed", "error": "ConfiguredModelMissing", "model": name}
     speakers = request("voicevox_speaker", "GET", settings.voicevox + "/speakers")
     if speakers is not None:
         valid = isinstance(speakers, list) and any(
@@ -97,11 +84,10 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
         if not isinstance(running, dict):
             checks["aivo_server"] = {"status": "failed", "error": "InvalidHealthResponse"}
         else:
-            keys = ("llm_model", "stt_model", "stt_device", "stt_compute", "speaker", "web_search",
-                    "response_protocol", "lookup_revision", "runtime_id", "actual_stt_device", "actual_stt_compute")
+            keys = ("llm_model", "stt_model", "speaker", "web_search",
+                    "response_protocol", "lookup_revision", "runtime_id", "stt_backend")
             effective = {key: running.get(key) for key in keys}
             expected = {"llm_model": settings.llm, "stt_model": settings.stt_model,
-                        "stt_device": settings.stt_device, "stt_compute": settings.stt_compute,
                         "speaker": settings.speaker, "web_search": settings.web_search}
             mismatches = [key for key, value in expected.items() if running.get(key) != value]
             if mismatches or running.get("response_protocol") != "final-json-v1" or not running.get("ready"):
@@ -113,7 +99,6 @@ def diagnose(settings, client, *, root=None, app_url="http://127.0.0.1:8000"):
         "platform": platform.platform(), "status": "passed" if all(c["status"] == "passed" for c in checks.values()) else "failed",
         "scope": "Read-only prerequisites; not model inference, microphone/playback, quality, offline, or latency acceptance.",
         "configuration": {"llm_model": settings.llm, "stt_model": settings.stt_model,
-                          "stt_device": settings.stt_device, "stt_compute": settings.stt_compute,
                           "speaker": settings.speaker, "web_search": settings.web_search,
                           "context": settings.context, "max_tokens": settings.max_tokens},
         "checks": checks, "quantization": None, "loaded_models": observed,

@@ -70,23 +70,23 @@ class StreamingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "before completion"):
             immediate(stream.__anext__())
 
-    def test_auto_cuda_failure_retries_cpu_int8(self):
-        devices = []
-        class Whisper:
-            def __init__(self, path, **kwargs):
-                devices.append((kwargs["device"], kwargs["compute_type"]))
-                self.cuda = kwargs["device"] == "cuda"
-                self.assert_local = kwargs["local_files_only"]
-            def transcribe(self, *args, **kwargs):
-                if self.cuda: raise RuntimeError("CUDA library unavailable")
-                return [SimpleNamespace(text="ok")], None
-        modules = {"faster_whisper": SimpleNamespace(WhisperModel=Whisper),
-                   "ctranslate2": SimpleNamespace(get_cuda_device_count=lambda: 1)}
-        with patch("aivo.backends.Path.is_dir", return_value=True), patch.dict(sys.modules, modules):
-            backend = Backends(Settings(stt_model="mock-model", stt_device="auto", stt_compute="auto"))
-            self.assertEqual(backend.transcribe([]), "ok")
-            self.assertEqual(devices, [("cuda", "int8_float16"), ("cpu", "int8")])
-            self.assertEqual((backend.actual_stt_device, backend.actual_stt_compute), ("cpu", "int8"))
+    def test_transcribe_sends_japanese_mono_pcm_wav_to_ovms(self):
+        import io
+        import wave
+        import httpx
+        import numpy as np
+
+        class Client:
+            async def post(self, url, *, data, files):
+                assert url.endswith("/v3/audio/transcriptions")
+                assert data == {"model": "whisper-small", "language": "ja"}
+                with wave.open(io.BytesIO(files["file"][1])) as wav:
+                    assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (16000, 1, 2)
+                    assert wav.getnframes() == 512
+                return httpx.Response(200, json={"text": " こんにちは "}, request=httpx.Request("POST", url))
+
+        text = immediate(Backends(Settings()).transcribe(Client(), np.zeros(512)))
+        self.assertEqual(text, "こんにちは")
 
 
 if __name__ == "__main__":

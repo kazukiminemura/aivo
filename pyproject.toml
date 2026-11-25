@@ -8,7 +8,6 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1",
     "httpx>=0.28,<1",
     "numpy>=1.26,<3",
-    "faster-whisper>=1.1,<2",
     "silero-vad>=6,<7",
     "python-dotenv>=1,<2",
     "openai-agents>=0.26.0",

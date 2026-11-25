@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 
 KEYS = {"llm": "AIVO_LLM_MODEL", "speaker": "AIVO_SPEAKER", "speed": "AIVO_TTS_SPEED",
-        "stt_device": "AIVO_STT_DEVICE", "web_search": "AIVO_WEB_SEARCH", "save_history": "AIVO_SAVE_HISTORY"}
+        "web_search": "AIVO_WEB_SEARCH", "save_history": "AIVO_SAVE_HISTORY"}
 LOCK = Lock()
 
 
@@ -24,8 +24,6 @@ def save_preferences(path, values, current):
         raise ValueError("声は整数、速度は数値で指定してください。")
     if type(values["save_history"]) is not bool or type(values["web_search"]) is not bool:
         raise ValueError("保存・検索の設定は真偽値で指定してください。")
-    if not isinstance(values["stt_device"], str) or values["stt_device"] not in {"auto", "cpu", "cuda"}:
-        raise ValueError("音声認識デバイスはauto / cpu / cudaで指定してください。")
     pending = replace(current, **values)
     path = Path(path)
     with LOCK:

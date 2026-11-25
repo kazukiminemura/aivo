@@ -41,7 +41,7 @@ class FakeBackends:
     def vad(self):
         return FakeVAD()
 
-    def transcribe(self, audio):
+    async def transcribe(self, client, audio):
         assert audio.dtype == np.float32
         self.stt_calls += 1
         return "test utterance"

@@ -1,73 +1,62 @@
 """Explicit online setup; the voice server never downloads models."""
 import argparse
-import hashlib
-import platform
+import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
-import zipfile
-from urllib.request import urlopen
 from pathlib import Path
 
-
-OVMS_VERSION = "2026.4.1"
-OVMS_SHA256 = "1bc2372d81bb4767829a7bf513745bd481ccbfec9550e278804ebe2051e3b678"
+from aivo.ovms_install import install_ovms
 
 
-def install_ovms():
-    if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
-        raise SystemExit("The bundled OVMS setup requires x64 Windows.")
-    parent = Path(__file__).resolve().parents[1] / ".runtime"
-    target = parent / f"ovms-{OVMS_VERSION}"
-    executable = target / "ovms.exe"
-    if executable.is_file():
-        print(f"OVMS already installed: {executable}")
-        return
-    parent.mkdir(exist_ok=True)
-    url = (f"https://github.com/openvinotoolkit/model_server/releases/download/v{OVMS_VERSION}/"
-           f"ovms_windows_{OVMS_VERSION}_python_off.zip")
-    print(f"Installing Windows OVMS {OVMS_VERSION} -> {target}", flush=True)
-    with tempfile.TemporaryDirectory(dir=parent) as temp:
-        archive = Path(temp) / "ovms.zip"
-        with urlopen(url, timeout=120) as response, archive.open("wb") as output:
-            shutil.copyfileobj(response, output)
-        with archive.open("rb") as source:
-            if hashlib.file_digest(source, "sha256").hexdigest() != OVMS_SHA256:
-                raise RuntimeError("OVMS download checksum mismatch")
-        with zipfile.ZipFile(archive) as bundle:
-            bundle.extractall(temp)
-        try:
-            (Path(temp) / "ovms").rename(target)
-        except FileExistsError:
-            if not executable.is_file():
-                raise
-    print(f"OVMS ready: {executable}", flush=True)
+def configure_models(runtime, whisper_name, whisper_dir, include_llm):
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(repo_id=f"OpenVINO/{whisper_name}-int8-ov", local_dir=whisper_dir)
+    subprocess.run([runtime, "--configure", "--model_path", whisper_dir, "--task", "speech2text",
+                    "--target_device", "CPU"], check=True)
+    graphs = [{"name": whisper_name, "base_path": str(whisper_dir)}]
+
+    llm_dir = Path("models/Qwen3-4B").resolve()
+    if include_llm:
+        snapshot_download(repo_id="OpenVINO/Qwen3-4B-int4-ov", local_dir=llm_dir)
+    if (llm_dir / "openvino_model.bin").is_file():
+        subprocess.run([runtime, "--configure", "--model_path", llm_dir, "--task", "text_generation",
+                        "--tool_parser", "hermes3", "--reasoning_parser", "qwen3"], check=True)
+        graphs.append({"name": "Qwen3-4B", "base_path": str(llm_dir)})
+    return graphs
+
+
+def write_config(path, graphs):
+    path.parent.mkdir(exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as f:
+        json.dump({"model_config_list": [], "mediapipe_config_list": graphs}, f, indent=2)
+    os.replace(f.name, path)
+    print(f"OVMS configuration ready: {path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Download local voice models (internet required)")
-    parser.add_argument("--model", default="small", help="faster-whisper size; small is the Japanese conversation preset")
-    parser.add_argument("--output", help="Model output directory (default: models/whisper-<model>)")
+    parser.add_argument("--model", default="small", help="Multilingual Whisper size (default: small)")
+    parser.add_argument("--output", help="Model output directory (default: models/ovms/whisper-<model>)")
     parser.add_argument("--llm", action="store_true", help="Also download Qwen3-4B INT4 and install OVMS on x64 Windows")
     parser.add_argument("--ovms", action="store_true", help="Install only the Windows x64 OVMS runtime")
     args = parser.parse_args()
-    if args.ovms or (args.llm and sys.platform == "win32"):
-        install_ovms()
+    if args.ovms or sys.platform == "win32":
+        runtime = install_ovms()
         if args.ovms and not args.llm:
             return
-    from faster_whisper.utils import download_model
-    output = args.output or f"models/whisper-{args.model}"
-    print(f"Downloading STT {args.model} -> {output}", flush=True)
-    download_model(args.model, output_dir=str(Path(output)))
-    print(f"STT model ready: {output}", flush=True)
-    if args.llm:
-        from huggingface_hub import snapshot_download
+    else:
+        runtime = shutil.which("ovms")
+        if not runtime:
+            parser.error("Install OVMS and add ovms to PATH before setting up models.")
 
-        repo = "OpenVINO/Qwen3-4B-int4-ov"
-        destination = Path("models/Qwen3-4B")
-        print(f"Downloading {repo} -> {destination}", flush=True)
-        snapshot_download(repo_id=repo, local_dir=destination)
-        print(f"OVMS model ready: {destination}", flush=True)
+    name = f"whisper-{args.model}"
+    directory = Path(args.output or Path("models/ovms") / name).resolve()
+    graphs = configure_models(runtime, name, directory, args.llm)
+    write_config(Path("models/aivo-ovms.json"), graphs)
 
 
 if __name__ == "__main__":

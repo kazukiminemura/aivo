@@ -6,7 +6,7 @@
 
 ## 処理と対話方針
 
-マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。faster-whisper smallがbeam size 3で日本語を認識し、履歴付きでOVMSへ渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
+マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。OVMSのwhisper-smallが発話区間のWAVを日本語に文字起こしし、aivoが履歴を加えてQwenに渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
 
 ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話で割り込めます。Processing / Preparing / Idleでは音声取得を止めます。常時すべての処理で同時対話する方式ではありません。停止・新規会話は旧ターンと保留音声を破棄します。STTはスレッド内で動くため、停止操作が推論自体の即時終了を保証するわけではありません。
 
@@ -24,9 +24,7 @@ ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話
 
 | 環境変数 | 初期値 | 意味 |
 | --- | --- | --- |
-| `AIVO_STT_MODEL` | `models/whisper-small` | 事前取得済みfaster-whisperモデル |
-| `AIVO_STT_DEVICE` | `auto` | CUDAを試し、利用不可ならCPU |
-| `AIVO_STT_COMPUTE` | `auto` | CUDAは `int8_float16`、CPUは `int8` |
+| `AIVO_STT_MODEL` | `whisper-small` | OVMSで配信する文字起こしモデルID |
 | `AIVO_OVMS_URL` | `http://127.0.0.1:8001` | ローカルOVMS |
 | `AIVO_LLM_MODEL` | `Qwen3-4B` | OVMSで配信するモデルID |
 | `AIVO_MAX_TOKENS` | `192` | 最大出力トークン数 |
@@ -44,7 +42,6 @@ ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話
 
 実行デバイスと量子化はOVMSのモデル配信設定で確認します。
 
-GPU版STTには対応するCUDA / cuDNNが必要です。不適合ならCPUへ戻るため、実行ログのデバイスも確認してください。[faster-whisperの公式手順](https://github.com/SYSTRAN/faster-whisper#gpu)を参照してください。モデル事前ロードと30分常駐要求は、メモリ不足を解消するものではありません。他プロセスを自動終了しません。
 
 履歴は直近20往復を上限に、完全な会話の組を保ち、保守的な文字数予算で古い組から削除します。これは厳密なトークン数計算ではなく、4096トークンに20往復すべて入る保証はありません。長い会話を無制限に記憶する保証はありません。出力上限が短いと回答が途中で終わる場合があり、コンテキストを増やすとメモリや遅延が増える可能性があります。
 
@@ -170,7 +167,7 @@ get_dataで実際に試行した外部リクエストのプロバイダーと状
 
 `AIVO_SAVE_HISTORY=false`が既定。`data/history.sqlite3`は最初の保存時のみ作成する。各WebSocketの保存IDは停止では保持し、新しい会話で更新する。保存有効時に開始したターンが正常完了し、保存時にも有効ならユーザー/assistant本文を保存する。保存失敗は通知し、音声再生を中断しない。既存の保存履歴はOFFにしても削除されない。
 
-設定の保存は既存`.env`の無関係な項目を保持し、一時ファイルから置き換える。履歴保存のみ即時、モデル・声・速度・認識デバイス・外部検索は再起動後に反映する。声は数値ID、速度は0.5〜2.0、デバイスはauto/cpu/cuda。書込と履歴閲覧・削除は同一Originを確認し、同一サイトのGETはSec-Fetch-Siteも確認する。一般的なネット公開用の認証ではないため、待受はlocalhostに限定する。
+設定の保存は既存`.env`の無関係な項目を保持し、一時ファイルから置き換える。履歴保存のみ即時、モデル・声・速度・外部検索は再起動後に反映する。声は数値ID、速度は0.5〜2.0。書込と履歴閲覧・削除は同一Originを確認し、同一サイトのGETはSec-Fetch-Siteも確認する。一般的なネット公開用の認証ではないため、待受はlocalhostに限定する。
 
 `python -m aivo.doctor`の診断と実機受け入れは[対応状況](acceptance-status.md)と[ADR-002](adr-002-acceptance-boundaries.md)を参照。
 

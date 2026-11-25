@@ -136,7 +136,7 @@ test('warmup failure stops microphone state and server Idle acknowledges cleanup
   assert.equal(h.timers.size, 0);
 });
 
-test('configuration displays STT precision and the configured OVMS model; first-audio timing is a server estimate', async () => {
+test('configuration displays both OVMS model names; first-audio timing is a server estimate', async () => {
   const h = harness();
   h.sandbox.fetch = async () => ({ok: true, json: async () => ({
     ready: true, stt: true, ovms: true, voicevox: true, voice_interruption: true, response_protocol: 'final-json-v1', runtime_id: 'abc12345',
@@ -145,7 +145,7 @@ test('configuration displays STT precision and the configured OVMS model; first-
   })});
   await vm.runInContext('refresh()', h.ctx);
   const configuration = h.nodes.get('configuration').textContent;
-  assert.match(configuration, /cuda \/ int8_float16/);
+  assert.match(configuration, /OVMS \/ whisper/);
   assert.match(configuration, /OVMS \/ qwen/);
   assert.match(configuration, /final-json-v1/);
   assert.match(configuration, /abc12345/);

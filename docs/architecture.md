@@ -40,7 +40,7 @@ flowchart LR
     A <-->|検索語 / HTTPS| Q
 ```
 
-- 音声認識とVADはPythonアプリ内、LLMはOVMS、TTSはVOICEVOXまたはブラウザ・OSで実行する。クラウド推論APIは実装していない。
+- VADはPythonアプリ内、音声認識とLLMはOVMS、TTSはVOICEVOXまたはブラウザ・OSで実行する。クラウド推論APIは実装していない。
 - **外部検索は既定ON**。送信語句には会話から抽出した情報が含まれ得る。`AIVO_WEB_SEARCH=false` でアプリの外部検索経路を止める。端末全体の通信を遮断する設定ではない。
 - Open-Meteoの地名検索で日本の行政区名が見つからない場合、国土地理院を補助利用する。一般検索は抜粋とリンクを取得するだけで、検索先ページの本文・公開日時は取得・検証しない。
 - 図のネット通信は実行時検索の範囲。初回の依存・モデル取得は [setup.py](../aivo/setup.py) とREADMEの明示的なセットアップで別途行う。
@@ -61,7 +61,7 @@ flowchart TB
     subgraph Python[Python / Uvicorn + FastAPIの1プロセス]
         API["server.py<br/>HTTP API・WebSocket制御"]
         FLOW["接続ごとの状態・非同期タスク<br/>VAD・区間検出・割り込み・外部取得"]
-        STT["共有BackendsのSTT<br/>faster-whisper / ワーカースレッド"]
+        STT["Backends.transcribe<br/>WAV送信"]
         VALID["最終JSON検証・意味状態更新<br/>検証後に本文を分割"]
         API <--> FLOW
         FLOW -->|発話区間 / PCM| STT
@@ -76,6 +76,7 @@ flowchart TB
     UI <-->|"同一Origin HTTP / 既定 :8000<br/>画面・health・設定・保存履歴"| API
     UI -->|"/ws バイナリPCM + JSON制御"| API
     API -->|"/ws JSONイベント<br/>WAVはBase64 / 端末TTSは本文"| UI
+    STT <-->|/v3/audio/transcriptions| O
     FLOW <-->|ループバックHTTP / 会話生成| O
     FLOW --> SDK[OpenAI Agents SDK / Runner]
     SDK <-->|調査中の推論| O
@@ -87,7 +88,7 @@ flowchart TB
 枠は実行領域を表す。ブラウザやOVMS等の内部OSプロセス数は規定しない。AudioWorkletはブラウザの音声処理領域であり、独立したaivoサーバーではない。SQLiteは組み込みライブラリで、DBサーバーの起動は不要。実装には分離したAgentプロセスやUIビルド工程はない。
 
 - **入力**: マイク → AudioWorklet → `app.js` → `/ws`。PCMは16 kHz・モノラル・little-endian float32、1フレーム512サンプル（32 ms / 2,048 bytes）。サーバーは長さ・有限値・振幅を検証する。
-- **推論**: Silero VADの確率 → `Segmenter` → STT → 必要なら外部取得 → 通常会話ではOVMSの最終回答。VADモデルは接続ごと、WhisperモデルとSTTロックは共有する。重いSTT処理は `asyncio.to_thread()` へ渡す。
+- **推論**: Silero VADの確率 → `Segmenter` → STT → 必要なら外部取得 → 通常会話ではOVMSの最終回答。VADモデルは接続ごとに使用し、WhisperはOVMSで共有する。
 - **出力**: 通常会話は生成全体の検証後に `speech_chunks()` で本文を分割する。VOICEVOX経路はWAV、端末音声経路は `speech` イベントの本文・速度を送る。外部取得の固定返答は現在 `process()` の直接返答経路へ渡すため、通常会話と同じ分割を通るとは限らない。
 - **TTS選択**: `auto` は準備確認時に指定話者のVOICEVOXが使えればVOICEVOX、それ以外は `browser`。`browser` はVOICEVOX確認・ウォームアップ・合成を省く。`voicevox` 固定ではVOICEVOXを必須とする。選択後の合成エラーで途中から端末音声へ自動再試行する実装ではない。
 - ブラウザ側は `localService=true` の日本語音声だけを使い、見つからなければ開始を許可しない。サーバーの `ready` だけでは端末での再生可能性まで確認できない。
@@ -137,9 +138,12 @@ flowchart TB
 | --- | --- |
 | [server.py](../aivo/server.py) | アプリ生成、静的配信、HTTP API、`conversation()` 内の接続状態と処理タスク。セッション管理専用クラスはなく、内部関数とローカル変数で調停する |
 | [core.py](../aivo/core.py) | 環境変数を読む `Settings`、ループバックURLの検証、`Segmenter`、完全な往復単位で予算に収める `build_messages()`、本文分割 |
-| [backends.py](../aivo/backends.py) | STTモデルの遅延ロード・CUDA自動選択とCPU退避、OVMSリクエスト生成・全出力受信、VOICEVOX合成、準備確認 |
+| [backends.py](../aivo/backends.py) | 会話の応答形式・検証、音声処理とサービスの準備確認 |
+| [ovms.py](../aivo/ovms.py) | WhisperへのWAV送信、Qwenのストリーム受信、配信モデル一覧の取得 |
+| [setup.py](../aivo/setup.py) / [ovms_install.py](../aivo/ovms_install.py) | セットアップCLIとモデル配信設定 / Windows版ランタイムの取得・検証・展開 |
 | [dialogue.py](../aivo/dialogue.py) / [answer.py](../aivo/answer.py) | JSON形状・長さ・重複キー・禁止タグの検証、意味状態の確定。factsをユーザー発言の原文や以前の引用根拠に照合する。意味全体の正しさの保証ではない |
-| [web_search.py](../aivo/web_search.py) | 明示天気のコード側抽出、Agents SDKの検索ツールと調査ループ、日付解決、固定HTTPS取得先、検索HTML解析、`lookup_reply()` の固定返答と天気状態更新 |
+| [web_search.py](../aivo/web_search.py) | 明示天気のコード側抽出、検索ツール、日付解決、固定HTTPS取得先、検索HTML解析、`lookup_reply()` の固定返答と天気状態更新 |
+| [research.py](../aivo/research.py) | OVMSを推論先とするAgents SDKの設定、ツール実行の進行と終了条件 |
 | [barge_in.py](../aivo/barge_in.py) | 読み上げ中の連続発話判定と先頭音声保持。音響エコー除去器ではない |
 | [history.py](../aivo/history.py) / [preferences.py](../aivo/preferences.py) | SQLite本文保存・読出し・削除、設定値検証、既存の無関係な値を保った `.env` の一時ファイル置換 |
 | [web/app.js](../aivo/web/app.js) / [web/microphone.js](../aivo/web/microphone.js) | 開始・停止・入力ゲート、WAVデコードと再生、端末音声の順序・完了管理、古い非同期結果の排除、設定・保存履歴画面 |
@@ -238,7 +242,7 @@ classDiagram
 
 | スコープ | 実体・寿命 |
 | --- | --- |
-| サーバープロセス共有 | `Settings` / `Backends` / `HistoryStore` は [server.py](../aivo/server.py) のモジュール変数。STTロックで同時推論を抑える。設定・モデルを接続ごとに作り直さない |
+| サーバープロセス共有 | `Settings` / `Backends` / `HistoryStore` は [server.py](../aivo/server.py) のモジュール変数。設定・モデルを接続ごとに作り直さない |
 | WebSocket接続ごと | `Segmenter` / `BargeIn` / `DialogueState`、Sileroモデル、HTTPクライアント、`history` リストとID・フラグ。接続終了で破棄する |
 | 検索ごと | `SearchResults` はHTML解析時に生成する。[web_search.py](../aivo/web_search.py) の関数群から呼ぶ |
 | ブラウザ音声入力 | `MicrophoneProcessor` は [microphone.js](../aivo/web/microphone.js) で登録するWorklet。画面の `generation` と入力の `captureEpoch` で旧処理を識別する |
@@ -319,7 +323,7 @@ sequenceDiagram
 
 - `Backends.generation_request()` はOVMSの `/v3/chat/completions` に会話履歴と応答スキーマを渡す。
 - `chat_stream()` という名前でも、UI/TTSへ未検証のLLMトークンを逐次流す処理ではない。LLM生成完了前の発話は[ADR-002](adr-002-acceptance-boundaries.md)によりMVPで延期している。
-- `process()` 全体と準備には180秒の上限がある。通常停止はタスクをキャンセルし、入力・再生の古い結果を破棄する。STTスレッドの推論自体を即時終了する保証はない。
+- `process()` 全体と準備には180秒の上限がある。通常停止はタスクをキャンセルし、入力・再生の古い結果を破棄する。OVMSで実行中の推論自体を即時終了する保証はない。
 - サーバーの `tts_ms` はVOICEVOX合成時間。端末TTSでは `null`。`first_audio_ready_ms` は送信可能時点の概算で、ユーザー発話終了から実音声出力までの実測とは異なる。
 
 ### 状態・識別子と割り込み
@@ -345,7 +349,7 @@ sequenceDiagram
 | 意味状態・天気保留・引用根拠 | 接続内の `DialogueState`。通常会話では検証後、音声出力前に更新。停止・割り込みでも保持、resetや切断で破棄 |
 | 永続履歴 | **既定OFF**。ONの状態で処理を開始し、保存時にもONなら、完成済みのユーザー・assistant本文だけをSQLiteへ追加する。最初の保存時にDBを作る。実再生完了を待った保存ではない。失敗・中断途中の部分出力を新規保存しない |
 | 保存済みデータ | OFF・停止・resetでは削除しない。明示的な個別・全削除APIで消す。モデル用履歴への自動再投入はしない。音声原本・意味状態は保存しない |
-| 設定 | `.env` に保存。履歴保存スイッチだけ即時反映し、モデル・声・速度・STTデバイス・外部検索は再起動後に反映。`AIVO_TTS_BACKEND` 等の環境変数は手動設定で、画面の保存対象とは別 |
+| 設定 | `.env` に保存。履歴保存スイッチだけ即時反映し、モデル・声・速度・外部検索は再起動後に反映。`AIVO_TTS_BACKEND` 等の環境変数は手動設定で、画面の保存対象とは別 |
 
 「停止」は同じ接続のメモリと保存用IDを保持。「新しい会話」はメモリと意味状態を消し `history_id` を更新。切断・再接続は新しい接続状態を作る。サーバー再起動では全メモリを失うが、SQLiteと `.env` は残る。
 
@@ -399,11 +403,11 @@ FastAPIは [TrustedHostMiddlewareとOrigin検証](../aivo/server.py)、ローカ
 - **実装からの推定**: [microphone.js](../aivo/web/microphone.js)で実際の入力サンプルレートを16 kHzへ変換し、サーバーが受ける512サンプルの単位を作ることで、端末の入力レートと通信契約を分離できる。[app.js](../aivo/web/app.js)の入力ゲート、世代番号、再生キューは、停止後の古い非同期結果が混入するのを抑えるための構造と読める。
 - **代替案・制約**: React等を使う構成でも音声APIの制御は必要で、現行では画面状態・DOM更新・再生管理を直接保守する。ブラウザのマイク権限、AudioWorklet、端末音声等の対応状況に依存する。UIフレームワーク間の開発工数・性能の比較記録はない。
 
-### faster-whisperとSilero VAD：認識と発話区間判定をローカルで分担する
+### OVMSのWhisperとSilero VAD：認識と発話区間判定をローカルで分担する
 
 - **記録された判断**: [要求定義の目的](requirements.md)はクラウド推論APIなしの会話を求め、[ADR-001](adr-001-local-mvp.md)はSileroの同梱モデルと事前取得済みfaster-whisperを使う。baseでの認識品質の問題を受けsmallへ戻した経緯は記録されているが、全STTモデル間の優位性やCER改善を証明する記録ではない。
-- **実装からの推定**: [Segmenter](../aivo/core.py)がVAD確率・無音時間で区間を確定し、[Backends.transcribe()](../aivo/backends.py)がその区間だけを日本語認識することで、発話終了と認識モデルの役割を分けられる。ローカルファイル限定ロードは推論中のモデル取得を避け、CUDA自動選択とCPU退避はGPU実行が利用できない場合の経路を残す。
-- **代替案・制約**: 固定時間録音だけの区切り方とは異なり、無音待機を増減すると待ち時間と発話の分断に影響する。既定800 msが全環境で最適とは判定していない。STTはスレッドと共有ロックで同時推論を抑えるため、キャンセルしても推論自体は即時終了しない。コードコメントにある強制キャンセル用のプロセス分離は未実装。VADは話者識別や音響エコー除去の代わりにはならない。
+- **実装からの推定**: [Segmenter](../aivo/core.py)がVAD確率・無音時間で区間を確定し、[Backends.transcribe()](../aivo/backends.py)がその区間だけを日本語認識することで、発話終了と認識モデルの役割を分けられる。OVMSがセットアップ時に取得したモデルを配信する。
+- **代替案・制約**: 固定時間録音だけの区切り方とは異なり、無音待機を増減すると待ち時間と発話の分断に影響する。既定800 msが全環境で最適とは判定していない。VADは話者識別や音響エコー除去の代わりにはならない。
 
 ### OVMSとOpenAI Agents SDKの役割
 

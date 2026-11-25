@@ -13,13 +13,13 @@ def settings():
 
 def healthy_handler(request):
     if request.url.path == "/v3/models":
-        return httpx.Response(200, json={"data": [{"id": "other"}, {"id": "qwen3.5:9b"}]})
+        return httpx.Response(200, json={"data": [{"id": "models/test"}, {"id": "qwen3.5:9b"}]})
     if request.url.path == "/speakers":
         return httpx.Response(200, json=[{"styles": [{"id": 3}]}])
     assert request.url.path == "/api/health"
     s = settings()
     return httpx.Response(200, json={"ready": True, "llm_model": s.llm, "stt_model": s.stt_model,
-        "stt_device": s.stt_device, "stt_compute": s.stt_compute, "speaker": s.speaker,
+        "speaker": s.speaker,
         "web_search": s.web_search, "response_protocol": "final-json-v1", "runtime_id": "test"})
 
 
@@ -31,7 +31,7 @@ def test_doctor_reports_live_configuration_and_provenance_without_loading_models
         report = diagnose(settings(), client)
     assert report["status"] == "passed"
     assert report["quantization"] is None
-    assert report["loaded_models"][0]["id"] == "qwen3.5:9b"
+    assert {m["id"] for m in report["loaded_models"]} == {"models/test", "qwen3.5:9b"}
     assert report["checks"]["git"]["changed_paths"] == ["aivo/core.py"]
     assert "not model inference" in report["scope"]
 
@@ -44,8 +44,7 @@ def test_blocked_services_and_missing_stt_are_failed_with_explicit_recovery():
          patch("aivo.doctor.git_state", return_value={"status": "passed", "head": "abc"}):
         report = diagnose(settings(), client)
     assert report["status"] == "failed"
-    assert report["checks"]["stt_files"]["missing"] == ["model.bin", "config.json", "tokenizer.json"]
-    assert report["checks"]["stt_files"]["recovery"]["command"][-1] == "models/test"
+    assert report["checks"]["ovms_stt"]["error"] == "ConnectError"
     assert report["checks"]["ovms_model"]["error"] == "ConnectError"
     assert "sensitive path" not in json.dumps(report)
     assert report["running_configuration"] is None
