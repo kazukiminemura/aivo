@@ -26,7 +26,7 @@ OVMSが会話と調査に必要なLLM推論を担当します。OpenAI Agents SD
 | UI・マイク取得 | ブラウザ標準API、AudioWorklet |
 | API・音声転送 | FastAPI、WebSocket |
 | 発話区間検出 | Silero VAD、無音待機800ms |
-| 音声認識 | OVMS上の `whisper-small`（多言語INT8モデル、CPU）。16 kHzモノラルWAVを `/v3/audio/transcriptions` に送信 |
+| 音声認識 | OpenAI Python SDKからローカルOVMSの `whisper-large-v3-turbo`（多言語INT8、CPU）へ16 kHzモノラルWAVを送り、日本語で文字起こし |
 | LLM推論 | OVMSのChat Completions API。モデル名は `AIVO_LLM_MODEL` で指定 |
 | 調査の進行 | OpenAI Agents SDKのRunner。一般検索は1件の依頼につき最大3回 |
 | コンテキスト | 4096トークン。履歴・意味状態・取得結果のための予算を考慮 |
@@ -37,6 +37,8 @@ OVMSが会話と調査に必要なLLM推論を担当します。OpenAI Agents SD
 | 会話の保存 | 既定は接続中のみ。任意でローカルSQLiteへ本文を保存。モデル用履歴は最大20往復を上限に予算内で使用 |
 
 利用可能なモデルIDはOVMSの `GET /v3/models` で確認できます。量子化と実行デバイスはOVMS側で設定します。
+
+日本語の文字誤り率と、手元の録音での測定手順は[音声認識の評価](docs/asr-evaluation.md)にまとめています。
 
 ## セットアップ
 
@@ -91,7 +93,7 @@ AIVO_WEB_SEARCH=true
 
 ## 起動と操作
 
-1. OVMSを起動し、`http://127.0.0.1:8001/v3/models` に `whisper-small` と `Qwen3-4B` の両方があることを確認します。
+1. OVMSを起動し、`http://127.0.0.1:8001/v3/models` に `whisper-large-v3-turbo` と `Qwen3-4B` の両方があることを確認します。
 2. VOICEVOXは任意です。使用する場合だけアプリまたはEngineを`http://127.0.0.1:50021`で起動します。未起動時は端末標準の日本語ローカル音声を使用します。
 3. aivoを起動します。
 
@@ -243,7 +245,7 @@ AIVO_TTS_BACKEND=browser
 
 ## 音声認識モデルの変更（Windows）
 
-Whisper baseからsmallへ切り替えるには、通常のPowerShellで実行します。
+Whisperをlarge-v3-turboへ切り替えるには、通常のPowerShellで実行します。
 
 ```powershell
 .\upgrade-stt.ps1
@@ -251,4 +253,4 @@ Whisper baseからsmallへ切り替えるには、通常のPowerShellで実行�
 
 モデルの取得とOVMSの構成ファイル生成が成功した場合に、`.env`の音声認識設定を更新します。失敗した場合は既存の設定を維持します。適用にはOVMSとaivoの再起動が必要です。実際の認識精度はマイク音声で確認してください。
 
-より大きいモデルを試す場合は、`.\upgrade-stt.ps1 -Model large-v3-turbo`も指定できます。CPUで実行するため、モデルの大型化に伴い会話の待ち時間が増える可能性があります。
+軽量なモデルを使う場合は、`.\upgrade-stt.ps1 -Model small`も指定できます。CPUで実行するため、モデルの大型化に伴い会話の待ち時間が増える可能性があります。

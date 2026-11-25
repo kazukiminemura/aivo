@@ -6,7 +6,7 @@
 
 ## 処理と対話方針
 
-マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。OVMSのwhisper-smallが発話区間のWAVを日本語に文字起こしし、aivoが履歴を加えてQwenに渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
+マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。OVMSのwhisper-large-v3-turboが発話区間のWAVを日本語に文字起こしし、aivoが履歴を加えてQwenに渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
 
 ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話で割り込めます。Processing / Preparing / Idleでは音声取得を止めます。常時すべての処理で同時対話する方式ではありません。停止・新規会話は旧ターンと保留音声を破棄します。STTはスレッド内で動くため、停止操作が推論自体の即時終了を保証するわけではありません。
 
@@ -24,7 +24,7 @@ ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話
 
 | 環境変数 | 初期値 | 意味 |
 | --- | --- | --- |
-| `AIVO_STT_MODEL` | `whisper-small` | OVMSで配信する文字起こしモデルID |
+| `AIVO_STT_MODEL` | `whisper-large-v3-turbo` | OVMSで配信する文字起こしモデルID |
 | `AIVO_OVMS_URL` | `http://127.0.0.1:8001` | ローカルOVMS |
 | `AIVO_LLM_MODEL` | `Qwen3-4B` | OVMSで配信するモデルID |
 | `AIVO_MAX_TOKENS` | `192` | 最大出力トークン数 |

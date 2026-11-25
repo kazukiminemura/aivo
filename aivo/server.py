@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
+from openai import APIConnectionError, APIStatusError
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import FileResponse
@@ -355,9 +356,9 @@ async def conversation(ws: WebSocket):
             active = awaiting_playback = playback_pending = False
             pending_user, pending_answer = None, []
             barge.reset()
-            if isinstance(exc, httpx.HTTPStatusError):
+            if isinstance(exc, (httpx.HTTPStatusError, APIStatusError)):
                 message = f"Local service HTTP {exc.response.status_code}. Check OVMS / VOICEVOX."
-            elif isinstance(exc, (httpx.RequestError, TimeoutError)):
+            elif isinstance(exc, (httpx.RequestError, APIConnectionError, TimeoutError)):
                 message = "Local service unavailable or timed out. Check OVMS / VOICEVOX."
             else:
                 message = str(exc) if isinstance(exc, RuntimeError) else "音声処理に失敗しました。モデルと実行デバイスを確認してください。"

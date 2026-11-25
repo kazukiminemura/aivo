@@ -5,6 +5,7 @@ import wave
 from time import perf_counter
 
 import numpy as np
+from openai import AsyncOpenAI
 
 from aivo.core import SAMPLE_RATE
 
@@ -23,11 +24,13 @@ async def transcribe(client, url, model, audio):
     with wave.open(buffer, "wb") as wav:
         wav.setparams((1, 2, SAMPLE_RATE, 0, "NONE", ""))
         wav.writeframes(samples.tobytes())
-    response = await client.post(url + "/v3/audio/transcriptions",
-                                 data={"model": model, "language": "ja"},
-                                 files={"file": ("audio.wav", buffer.getvalue(), "audio/wav")})
-    response.raise_for_status()
-    return response.json()["text"].strip()
+    sdk = AsyncOpenAI(base_url=url + "/v3", api_key="local", http_client=client,
+                      timeout=client.timeout, max_retries=0)
+    response = await sdk.audio.transcriptions.create(
+        model=model, language="ja", temperature=0,
+        file=("audio.wav", buffer.getvalue(), "audio/wav"),
+    )
+    return response.text.strip()
 
 
 async def preload_llm(client, url, model):

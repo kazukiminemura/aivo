@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1,<2",
     "openai-agents>=0.26.0",
     "huggingface-hub>=0.23",
+    "openai>=2,<4",
 ]
 
 [dependency-groups]

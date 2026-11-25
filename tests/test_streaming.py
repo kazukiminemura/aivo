@@ -76,16 +76,29 @@ class StreamingTests(unittest.TestCase):
         import httpx
         import numpy as np
 
-        class Client:
-            async def post(self, url, *, data, files):
-                assert url.endswith("/v3/audio/transcriptions")
-                assert data == {"model": "whisper-small", "language": "ja"}
-                with wave.open(io.BytesIO(files["file"][1])) as wav:
-                    assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (16000, 1, 2)
-                    assert wav.getnframes() == 512
-                return httpx.Response(200, json={"text": " こんにちは "}, request=httpx.Request("POST", url))
+        import asyncio
+        from email.parser import BytesParser
+        from email.policy import default
 
-        text = immediate(Backends(Settings()).transcribe(Client(), np.zeros(512)))
+        def handler(request):
+            assert request.url.path == "/v3/audio/transcriptions" and request.url.host == "127.0.0.1"
+            mime = BytesParser(policy=default).parsebytes(
+                f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.content)
+            parts = {part.get_param("name", header="content-disposition"): part for part in mime.iter_parts()}
+            assert parts["model"].get_payload(decode=True) == b"whisper-large-v3-turbo"
+            assert parts["language"].get_payload(decode=True) == b"ja"
+            assert float(parts["temperature"].get_payload(decode=True)) == 0
+            with wave.open(io.BytesIO(parts["file"].get_payload(decode=True))) as wav:
+                assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (16000, 1, 2)
+                assert wav.getnframes() == 512
+            return httpx.Response(200, json={"text": " こんにちは "})
+
+        async def invoke():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                settings = Settings(ovms="http://127.0.0.1:8001", stt_model="whisper-large-v3-turbo")
+                return await Backends(settings).transcribe(client, np.zeros(512))
+
+        text = asyncio.run(invoke())
         self.assertEqual(text, "こんにちは")
 
 

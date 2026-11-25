@@ -1,6 +1,6 @@
 param(
     [ValidateSet('small', 'medium', 'large-v3-turbo')]
-    [string]$Model = 'small'
+    [string]$Model = 'large-v3-turbo'
 )
 $ErrorActionPreference = 'Stop'
 Push-Location $PSScriptRoot

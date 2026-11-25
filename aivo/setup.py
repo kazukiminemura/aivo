@@ -39,7 +39,7 @@ def write_config(path, graphs):
 
 def main():
     parser = argparse.ArgumentParser(description="Download local voice models (internet required)")
-    parser.add_argument("--model", default="small", help="Multilingual Whisper size (default: small)")
+    parser.add_argument("--model", default="large-v3-turbo", help="Multilingual Whisper size (default: large-v3-turbo)")
     parser.add_argument("--output", help="Model output directory (default: models/ovms/whisper-<model>)")
     parser.add_argument("--llm", action="store_true", help="Also download Qwen3-4B INT4 and install OVMS on x64 Windows")
     parser.add_argument("--ovms", action="store_true", help="Install only the Windows x64 OVMS runtime")

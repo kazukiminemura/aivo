@@ -19,7 +19,7 @@ def local_url(value):
 
 @dataclass
 class Settings:
-    stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "whisper-small").replace("\\", "/").removeprefix("models/"))
+    stt_model: str = field(default_factory=lambda: os.getenv("AIVO_STT_MODEL", "whisper-large-v3-turbo").replace("\\", "/").removeprefix("models/"))
     ovms: str = field(default_factory=lambda: local_url(os.getenv("AIVO_OVMS_URL", "http://127.0.0.1:8001")))
     llm: str = field(default_factory=lambda: os.getenv("AIVO_LLM_MODEL", "Qwen3-4B"))
     voicevox: str = field(default_factory=lambda: local_url(os.getenv("AIVO_VOICEVOX_URL", "http://127.0.0.1:50021")))
@@ -62,6 +62,8 @@ class Segmenter:
         self.pre = deque(maxlen=8)
         self.frames = []
         self.voiced = self.silent = 0
+        self.confident_frames = 0
+        self.longest_confident_run = 0
 
     def feed(self, frame, probability):
         speech = probability >= self.threshold
@@ -73,10 +75,15 @@ class Segmenter:
             self.pre.clear()
         else:
             self.frames.append(frame)
+        # Preserve short acknowledgements only after sustained high-confidence speech.
+        self.confident_frames = self.confident_frames + 1 if speech and probability >= 0.95 else 0
+        self.longest_confident_run = max(self.longest_confident_run, self.confident_frames)
         self.voiced += int(speech)
         self.silent = 0 if speech else self.silent + 1
         if self.silent * FRAME_MS >= self.silence_ms or len(self.frames) * FRAME_MS >= 30000:
-            result = b"".join(self.frames) if self.voiced * FRAME_MS >= 250 else None
+            enough_voice = (self.voiced * FRAME_MS >= 250 or self.longest_confident_run >= 4
+                            or (self.voiced >= 6 and self.longest_confident_run >= 3))
+            result = b"".join(self.frames) if enough_voice else None
             self.reset()
             return result
         return None

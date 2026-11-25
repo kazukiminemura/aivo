@@ -22,6 +22,19 @@ class CoreTests(unittest.TestCase):
             self.assertIsNone(vad.feed(b"s", 0))
         self.assertFalse(vad.frames)
 
+    def test_short_answer_needs_consecutive_confident_frames(self):
+        for probabilities, keep in (([.98] * 4, True), ([.98] * 3, False),
+                                    ([.6, .9, .99, .99, .99, .7], True),
+                                    ([.6, .99, .99, .99, .7], False),
+                                    ([.98, .7, .98, .7, .98, .7, .98], False)):
+            vad = Segmenter()
+            for prob in probabilities:
+                vad.feed(b"v", prob)
+            for _ in range(24):
+                self.assertIsNone(vad.feed(b"s", 0))
+            self.assertEqual(vad.feed(b"s", 0) is not None, keep)
+            self.assertEqual(vad.longest_confident_run, 0)
+
     def test_long_speech_is_bounded_and_reset_discards_buffers(self):
         vad = Segmenter()
         count = math.ceil(30000 / FRAME_MS)
