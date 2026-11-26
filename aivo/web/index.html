@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark"><title>aivo — 音声会話</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script type="module" src="/static/app.js?v=transcription-test-1"></script>
+  <script type="module" src="/static/app.js?v=live-transcription-2"></script>
 </head>
 <body>
 <main>
@@ -14,6 +14,7 @@
     <h1 id="state" class="state" role="status">会話をはじめましょう</h1><p id="hint" class="hint">開始すると、マイクの使用許可を求めます。</p>
     <div class="controls"><button id="start" class="primary">会話を開始</button><button id="test-mic" disabled>音声認識テスト</button><button id="stop" disabled>停止</button></div>
     <section id="mic-results" hidden><h2>文字起こし結果</h2><div id="mic-text" role="log" aria-live="polite"></div></section>
+    <p id="conversation-preview" class="interim-text" hidden></p>
     <p id="lookup-status" class="hint" role="status" hidden></p>
     <p id="error" class="error" role="alert" hidden></p>
   </section>

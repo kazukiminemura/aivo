@@ -24,6 +24,8 @@ p { margin: 0; }
 #mic-results { margin-top: 24px; text-align: left; }
 #mic-text { max-height: 300px; overflow-y: auto; overflow-wrap: anywhere; }
 #mic-text p { margin-top: 8px; }
+.interim-text { color: #a0afb9; border-left: 2px dashed #72b7ae; padding-left: 10px; }
+#conversation-preview { margin-top: 14px; text-align: left; }
 button, select { font: inherit; }
 button { border: 1px solid #33404f; background: transparent; color: #cfdae7; border-radius: 24px; padding: 11px 24px; font-size: 13px; cursor: pointer; }
 button:hover:not(:disabled) { background: #253448; }

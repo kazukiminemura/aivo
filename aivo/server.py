@@ -23,6 +23,7 @@ from aivo.backends import Backends, readiness
 from aivo.answer import parse_final_answer
 from aivo.barge_in import BargeIn
 from aivo.dialogue import DialogueState
+from aivo.live_asr import LiveASR
 from aivo.history import HistoryStore
 from aivo.preferences import public_settings, save_preferences
 from aivo.web_search import lookup, evidence_message, lookup_reply
@@ -82,7 +83,7 @@ async def get_settings():
             nonlocal models
             try:
                 ids = await ovms.model_ids(client, settings.ovms)
-                models = [model for model in ids if model != settings.stt_model]
+                models = [model for model in ids if model not in {settings.stt_model, "whisper-small"}]
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 pass
         async def voice_options():
@@ -161,6 +162,7 @@ async def conversation(ws: WebSocket):
     task = None
     session_tts = "voicevox"
     transcription_only = False
+    preview_model = settings.stt_model
     active = listening = awaiting_playback = playback_pending = False
     history = []
     dialogue = DialogueState()
@@ -176,12 +178,16 @@ async def conversation(ws: WebSocket):
         await ws.send_json({"type": kind, "session_id": session_id, "turn_id": turn_id,
                             "timestamp": perf_counter(), **data})
 
+    live_asr = LiveASR(lambda audio: backends.transcribe(client, audio), emit,
+                       preview_request=lambda audio: ovms.transcribe(client, settings.ovms, preview_model, audio))
+
     async def cancel(interrupted=False):
         nonlocal task, active, listening, awaiting_playback, playback_pending, turn_id
         nonlocal pending_user, pending_answer, committed_turn
         old_turn = turn_id
         turn_id += 1
         active = listening = awaiting_playback = playback_pending = False
+        await live_asr.reset()
         if task:
             task.cancel()
         if interrupted:
@@ -215,16 +221,19 @@ async def conversation(ws: WebSocket):
             segmenter.feed(frame, probability)
 
     async def start_session():
-        nonlocal vad, listening, active, session_tts
+        nonlocal vad, listening, active, session_tts, preview_model
         active = True
         try:
             await emit("state", state="Preparing")
             async with asyncio.timeout(180):
                 if transcription_only:
-                    if settings.stt_model not in await ovms.model_ids(client, settings.ovms):
+                    models = await ovms.model_ids(client, settings.ovms)
+                    if settings.stt_model not in models:
                         raise RuntimeError(f"OVMSで音声認識モデル {settings.stt_model} を起動してください。")
+                    preview_model = "whisper-small" if "whisper-small" in models else settings.stt_model
                 else:
                     status = await readiness(settings)
+                    preview_model = status.get("stt_preview_model", settings.stt_model)
                     if not status["ready"]:
                         raise RuntimeError("準備が必要です。接続状態とREADMEの初期設定を確認してください。")
                     session_tts = status.get("tts_backend", "voicevox")
@@ -256,9 +265,7 @@ async def conversation(ws: WebSocket):
                 audio = np.frombuffer(raw, dtype="<f4").copy()
                 text = await backends.transcribe(client, audio)
                 metrics["stt_ms"] = round((perf_counter() - started) * 1000, 1)
-                if transcription_only and text:
-                    await emit("transcription", text=text)
-                if transcription_only or not text:
+                if not text:
                     active = False
                     await emit("state", state="Listening")
                     return
@@ -408,7 +415,12 @@ async def conversation(ws: WebSocket):
                         await emit("state", state="Listening")
                     continue
                 result = segmenter.feed(raw, probability)
-                if result is not None:
+                if result is None:
+                    live_asr.preview(segmenter)
+                elif transcription_only:
+                    await live_asr.finalize(result)
+                else:
+                    live_asr.advance()
                     turn_id += 1
                     active = True
                     task = asyncio.create_task(process(result, settings.silence_ms))

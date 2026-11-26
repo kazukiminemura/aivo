@@ -50,6 +50,18 @@ function harness({deferred = false} = {}) {
   return {ctx, nodes, timers, sent, sources, decodes, receive, audio, sandbox};
 }
 
+test('interleaved microphone previews and finals update the original utterance in place', async () => {
+  const h = harness();
+  vm.runInContext('transcriptionOnly = true', h.ctx);
+  await h.receive({type: 'transcription_preview', segment: 1, text: 'きょ'});
+  await h.receive({type: 'transcription_pending', segment: 1});
+  await h.receive({type: 'transcription_preview', segment: 2, text: 'あし'});
+  await h.receive({type: 'transcription', segment: 1, text: '今日'});
+  await h.receive({type: 'transcription', segment: 2, text: '明日'});
+  assert.deepEqual(h.nodes.get('mic-text').children.map(row => row.textContent), ['今日', '明日']);
+  assert.equal(h.nodes.get('mic-text').children[0].className, '');
+});
+
 test('restart ignores a stopped turn until the server acknowledgement and cancels its timer', async () => {
   const h = harness();
   vm.runInContext('stop(); void start();', h.ctx);

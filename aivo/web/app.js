@@ -12,6 +12,7 @@ let stopTimer;
 let ttsBackend = 'voicevox';
 let speechTest;
 let transcriptionOnly = false, sttReady = false;
+const pendingTranscripts = new Map();
 let protocolWarning = false;
 let voiceInterruption = false, interruptionSupported = false;
 let captureEpoch = 0, captureReady = false;
@@ -42,7 +43,7 @@ function showState(value) {
   $('hint').textContent = states[value][1];
   if (running && transcriptionOnly) {
     if (value === 'Processing') $('state').textContent = '文字起こし中';
-    if (value === 'Processing' || value === 'Listening') $('hint').textContent = '発話ごとに文字起こし結果を表示します。';
+    if (value === 'Processing' || value === 'Listening') $('hint').textContent = '話している途中の文字を表示し、発話後に確定します。';
   }
   $('orb').dataset.state = value;
   $('start').disabled = running || !ready;
@@ -86,6 +87,9 @@ function releaseAudio() {
 function stop() {
   generation++;
   running = accepting = false;
+  $('conversation-preview').hidden = true;
+  for (const row of pendingTranscripts.values()) row.remove();
+  pendingTranscripts.clear();
   releaseAudio();
   showState('Idle');
   if (socket?.readyState === WebSocket.OPEN) {
@@ -324,12 +328,30 @@ async function receive(message, fromSocket) {
     return;
   }
   if (message.type === 'state' && states[message.state]) showState(message.state);
-  if (message.type === 'transcription' && transcriptionOnly) {
-    const line = document.createElement('p');
-    line.textContent = message.text;
-    $('mic-text').append(line);
+  if (transcriptionOnly && ['transcription_preview', 'transcription_pending', 'transcription', 'transcription_failed'].includes(message.type)) {
+    let line = pendingTranscripts.get(message.segment);
+    if (!line) {
+      line = document.createElement('p');
+      pendingTranscripts.set(message.segment, line);
+      $('mic-text').append(line);
+    }
+    if (message.type === 'transcription_failed') line.textContent = 'この発話の文字起こしに失敗しました。';
+    else if (message.type !== 'transcription_pending') line.textContent = message.text;
+    else if (!line.textContent) line.textContent = '認識中…';
+    const pending = message.type === 'transcription_preview' || message.type === 'transcription_pending';
+    line.className = pending ? 'interim-text' : '';
+    if (!pending) {
+      pendingTranscripts.delete(message.segment);
+      if (!line.textContent) line.remove();
+    }
     $('mic-text').scrollTop = $('mic-text').scrollHeight;
   }
+  if (!transcriptionOnly && message.type === 'transcription_preview') {
+    $('conversation-preview').textContent = message.text;
+    $('conversation-preview').hidden = false;
+  }
+  if (message.type === 'transcript' || message.type === 'error' ||
+      (message.type === 'state' && message.state === 'Listening')) $('conversation-preview').hidden = true;
   if (message.type === 'history_status') { $('settings-message').textContent = message.message; }
   if (message.type === 'lookup_status') {
     $('lookup-status').textContent = message.text;

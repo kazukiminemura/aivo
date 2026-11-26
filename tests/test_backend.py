@@ -180,10 +180,11 @@ def test_microphone_test_uses_only_stt_and_can_resume_conversation(session, monk
             assert ws.receive_json()["state"] == "Listening"
             for _ in range(2):
                 send_turn(ws)
-                assert ws.receive_json()["state"] == "Processing"
+                pending = ws.receive_json()
+                assert pending["type"] == "transcription_pending"
                 result = ws.receive_json()
                 assert (result["type"], result["text"]) == ("transcription", "test utterance")
-                assert ws.receive_json()["state"] == "Listening"
+                assert result["segment"] == pending["segment"]
             assert not fake.messages and fake.tts_calls == 0
             ws.send_json({"type": "stop"})
             assert ws.receive_json()["state"] == "Idle"

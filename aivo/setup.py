@@ -16,8 +16,13 @@ def configure_models(runtime, whisper_name, whisper_dir, include_llm):
 
     snapshot_download(repo_id=f"OpenVINO/{whisper_name}-int8-ov", local_dir=whisper_dir)
     subprocess.run([runtime, "--configure", "--model_path", whisper_dir, "--task", "speech2text",
-                    "--target_device", "CPU"], check=True)
+                    "--target_device", "CPU", "--num_streams", "2"], check=True)
     graphs = [{"name": whisper_name, "base_path": str(whisper_dir)}]
+    if whisper_name != "whisper-small":
+        preview_dir = Path("models/ovms/whisper-small").resolve()
+        snapshot_download(repo_id="OpenVINO/whisper-small-int8-ov", local_dir=preview_dir)
+        subprocess.run([runtime, "--configure", "--model_path", preview_dir, "--task", "speech2text"], check=True)
+        graphs.append({"name": "whisper-small", "base_path": str(preview_dir)})
 
     llm_dir = Path("models/Qwen3-4B").resolve()
     if include_llm:

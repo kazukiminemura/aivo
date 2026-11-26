@@ -109,6 +109,7 @@ async def readiness(settings):
             ids = await ovms.model_ids(client, settings.ovms)
             result["ovms"] = settings.llm in ids
             result["stt"] = settings.stt_model in ids
+            result["stt_preview_model"] = "whisper-small" if "whisper-small" in ids else settings.stt_model
         async def check_voicevox():
             response = await client.get(settings.voicevox + "/speakers")
             response.raise_for_status()
