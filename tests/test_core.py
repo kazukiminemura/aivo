@@ -30,7 +30,7 @@ class CoreTests(unittest.TestCase):
             vad = Segmenter()
             for prob in probabilities:
                 vad.feed(b"v", prob)
-            for _ in range(24):
+            for _ in range(19):
                 self.assertIsNone(vad.feed(b"s", 0))
             self.assertEqual(vad.feed(b"s", 0) is not None, keep)
             self.assertEqual(vad.longest_confident_run, 0)

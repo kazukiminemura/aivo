@@ -6,7 +6,7 @@
 
 ## 処理と対話方針
 
-マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、既定800msの無音で確定します。OVMSのwhisper-large-v3-turboが発話区間のWAVを日本語に文字起こしし、aivoが履歴を加えてQwenに渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
+マイク音声を16kHz float32、512サンプルずつWebSocketへ送ります。Silero VADが発話を検出し、約384 msの発話からOVMSのwhisper-small（既定はIntel NPU）で暫定認識します。既定640 msの無音で発話を区切り、whisper-large-v3-turbo（CPU）が日本語の文字起こしを確定し、aivoが履歴を加えてQwenに渡します。通常会話はLLMの生成を最後まで受け取り、`final-json-v1` 形式を検証してから `reply` 本文を分割します。VOICEVOX経路はWAVを、端末標準経路はSpeechSynthesis用の本文と速度を送り、ブラウザで順番に再生します。天気・検索等の固定返答は通常会話LLMで再生成せず、本文形式の検証後に出力します。
 
 ListeningとSpeakingではマイク取得を継続し、読み上げ中の発話で割り込めます。Processing / Preparing / Idleでは音声取得を止めます。常時すべての処理で同時対話する方式ではありません。停止・新規会話は旧ターンと保留音声を破棄します。STTはスレッド内で動くため、停止操作が推論自体の即時終了を保証するわけではありません。
 

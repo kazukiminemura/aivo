@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 SAMPLE_RATE = 16000
 FRAME = 512
 FRAME_MS = FRAME / SAMPLE_RATE * 1000
+DEFAULT_SILENCE_MS = 640
 
 
 def local_url(value):
@@ -28,7 +29,7 @@ class Settings:
     save_history: bool = field(default_factory=lambda: os.getenv("AIVO_SAVE_HISTORY", "false").lower() in {"1", "true", "yes"})
     speaker: int = field(default_factory=lambda: int(os.getenv("AIVO_SPEAKER", "3")))
     threshold: float = field(default_factory=lambda: float(os.getenv("AIVO_VAD_THRESHOLD", ".5")))
-    silence_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_SILENCE_MS", "800")))
+    silence_ms: int = field(default_factory=lambda: int(os.getenv("AIVO_SILENCE_MS", DEFAULT_SILENCE_MS)))
 
     web_search: bool = field(default_factory=lambda: os.getenv("AIVO_WEB_SEARCH", "true").lower() in {"1", "true", "yes"})
 
@@ -54,7 +55,7 @@ class Settings:
 
 
 class Segmenter:
-    def __init__(self, threshold=.5, silence_ms=800):
+    def __init__(self, threshold=.5, silence_ms=DEFAULT_SILENCE_MS):
         self.threshold, self.silence_ms = threshold, silence_ms
         self.reset()
 

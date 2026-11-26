@@ -24,7 +24,8 @@ try {
     $tempPath = Join-Path $PSScriptRoot '.env.stt.tmp'
     [IO.File]::WriteAllText($tempPath, $envText, [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $tempPath -Destination $envPath -Force
-    Write-Host "STT changed to $Model (CPU int8). Restart OVMS and aivo to apply."
+    $device = if ($Model -eq 'small') { 'NPU' } else { 'CPU' }
+    Write-Host "STT changed to $Model ($device int8). Restart OVMS and aivo to apply."
 } finally {
     Pop-Location
 }

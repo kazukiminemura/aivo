@@ -25,8 +25,8 @@ OVMSが会話と調査に必要なLLM推論を担当します。OpenAI Agents SD
 | --- | --- |
 | UI・マイク取得 | ブラウザ標準API、AudioWorklet |
 | API・音声転送 | FastAPI、WebSocket |
-| 発話区間検出 | Silero VAD、無音待機800ms |
-| 音声認識 | OpenAI Python SDKからローカルOVMSの `whisper-large-v3-turbo`（多言語INT8、CPU）へ16 kHzモノラルWAVを送り、日本語で文字起こし |
+| 発話区間検出 | Silero VAD、無音待機640 ms（既定） |
+| 音声認識 | 16 kHzモノラルWAVをローカルOVMSへ送り、`whisper-small`（INT8、Intel NPU）で暫定表示、`whisper-large-v3-turbo`（INT8、CPU）で確定 |
 | LLM推論 | OVMSのChat Completions API。モデル名は `AIVO_LLM_MODEL` で指定 |
 | 調査の進行 | OpenAI Agents SDKのRunner。一般検索は1件の依頼につき最大3回 |
 | コンテキスト | 4096トークン。履歴・意味状態・取得結果のための予算を考慮 |
@@ -105,7 +105,9 @@ uv run uvicorn aivo.server:app --host 127.0.0.1 --port 8000 --ws-max-size 8192
 
 「音声認識テスト」を押して「聞いています」と表示されたら話してください。発話中は破線付きで暫定の文字起こしが表示され、発話後はその行が確定結果に変わります。前の発話の確定中も次の発話を受け付けます。「停止」で終了します。通常の会話でも、発話中は暫定結果を表示します。
 
-マイク音声は1本で、約0.5秒の発話から途中認識を開始します。セットアップはOVMSに暫定表示用の `whisper-small` と確定用の `whisper-large-v3-turbo`（既定）を用意します。Smallを配信していない既存環境では両方に確定用モデルを使います。表示の間隔は推論速度に依存します。以前の環境にSmallを追加するには `uv run python -m aivo.setup` を実行してOVMSとaivoを再起動してください。
+マイク音声は1本で、VADが約0.38秒分の発話を検出すると最初の暫定認識を要求します。表示の間隔は推論速度に依存します。通常は640 msの無音で発話を区切ります。無音待機は `AIVO_SILENCE_MS` で調整できます。
+
+`uv run python -m aivo.setup` は `whisper-small` の実行先にIntel NPUを設定します。既存環境にも同じコマンドを適用し、OVMSとaivoを再起動してください。起動時はNPU向けのコンパイルが完了し、OVMSの `/v3/models` に `whisper-small` が表示されるまで待ってください。Intel NPUを利用できない環境では `--small-device CPU` を指定してください。Smallを配信していない既存環境では、暫定と確定の両方に確定用モデルを使います。
 
 - **停止**：マイクと再生を停止し、同じ接続の会話状態は保持します。
 - **新しい会話**：履歴、意味状態、保留中の天気依頼を初期化します。
@@ -257,4 +259,4 @@ Whisperをlarge-v3-turboへ切り替えるには、通常のPowerShellで実行�
 
 モデルの取得とOVMSの構成ファイル生成が成功した場合に、`.env`の音声認識設定を更新します。失敗した場合は既存の設定を維持します。適用にはOVMSとaivoの再起動が必要です。実際の認識精度はマイク音声で確認してください。
 
-軽量なモデルを使う場合は、`.\upgrade-stt.ps1 -Model small`も指定できます。CPUで実行するため、モデルの大型化に伴い会話の待ち時間が増える可能性があります。
+確定文字起こしにもIntel NPUを使う場合は、`.\upgrade-stt.ps1 -Model small` を指定してください。確定と暫定の両方に `whisper-small` を使います。

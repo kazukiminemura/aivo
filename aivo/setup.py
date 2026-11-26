@@ -11,18 +11,20 @@ from pathlib import Path
 from aivo.ovms_install import install_ovms
 
 
-def configure_models(runtime, whisper_name, whisper_dir, include_llm):
+def configure_models(runtime, whisper_name, whisper_dir, include_llm, *, small_device="NPU"):
     from huggingface_hub import snapshot_download
 
-    snapshot_download(repo_id=f"OpenVINO/{whisper_name}-int8-ov", local_dir=whisper_dir)
-    subprocess.run([runtime, "--configure", "--model_path", whisper_dir, "--task", "speech2text",
-                    "--target_device", "CPU", "--num_streams", "2"], check=True)
-    graphs = [{"name": whisper_name, "base_path": str(whisper_dir)}]
+    whisper_models = [(whisper_name, whisper_dir)]
     if whisper_name != "whisper-small":
-        preview_dir = Path("models/ovms/whisper-small").resolve()
-        snapshot_download(repo_id="OpenVINO/whisper-small-int8-ov", local_dir=preview_dir)
-        subprocess.run([runtime, "--configure", "--model_path", preview_dir, "--task", "speech2text"], check=True)
-        graphs.append({"name": "whisper-small", "base_path": str(preview_dir)})
+        whisper_models.append(("whisper-small", Path("models/ovms/whisper-small").resolve()))
+    graphs = []
+    for name, directory in whisper_models:
+        small = name == "whisper-small"
+        snapshot_download(repo_id=f"OpenVINO/{name}-int8-ov", local_dir=directory)
+        subprocess.run([runtime, "--configure", "--model_path", directory, "--task", "speech2text",
+                        "--target_device", small_device if small else "CPU",
+                        "--num_streams", "1" if small else "2"], check=True)
+        graphs.append({"name": name, "base_path": str(directory)})
 
     llm_dir = Path("models/Qwen3-4B").resolve()
     if include_llm:
@@ -45,6 +47,8 @@ def write_config(path, graphs):
 def main():
     parser = argparse.ArgumentParser(description="Download local voice models (internet required)")
     parser.add_argument("--model", default="large-v3-turbo", help="Multilingual Whisper size (default: large-v3-turbo)")
+    parser.add_argument("--small-device", choices=("NPU", "CPU"), default="NPU",
+                        help="OVMS inference device for whisper-small (default: NPU)")
     parser.add_argument("--output", help="Model output directory (default: models/ovms/whisper-<model>)")
     parser.add_argument("--llm", action="store_true", help="Also download Qwen3-4B INT4 and install OVMS on x64 Windows")
     parser.add_argument("--ovms", action="store_true", help="Install only the Windows x64 OVMS runtime")
@@ -60,7 +64,7 @@ def main():
 
     name = f"whisper-{args.model}"
     directory = Path(args.output or Path("models/ovms") / name).resolve()
-    graphs = configure_models(runtime, name, directory, args.llm)
+    graphs = configure_models(runtime, name, directory, args.llm, small_device=args.small_device)
     write_config(Path("models/aivo-ovms.json"), graphs)
 
 

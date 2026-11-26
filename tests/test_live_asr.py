@@ -11,7 +11,7 @@ def test_final_does_not_wait_for_preview_and_stale_preview_is_discarded():
         completed = asyncio.Queue()
 
         async def transcribe(audio):
-            if len(audio) == 16:
+            if len(audio) == 12:
                 started_preview.set()
                 await release_preview.wait()
                 return "old preview"
@@ -21,10 +21,14 @@ def test_final_does_not_wait_for_preview_and_stale_preview_is_discarded():
             completed.put_nowait((kind, data))
 
         stream = LiveASR(transcribe, emit)
-        segment = SimpleNamespace(voiced=16, silent=0, frames=[bytes(4)] * 16)
+        segment = SimpleNamespace(voiced=11, silent=0, frames=[bytes(4)] * 11)
+        stream.preview(segment)
+        assert stream.preview_task is None
+        segment.voiced += 1
+        segment.frames.append(bytes(4))
         stream.preview(segment)
         await started_preview.wait()
-        segment.voiced = 32
+        segment.voiced = 24
         stream.preview(segment)
         await stream.finalize(bytes(256))
         await stream.finalize(bytes(128))

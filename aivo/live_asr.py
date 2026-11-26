@@ -4,6 +4,8 @@ import logging
 
 import numpy as np
 
+PREVIEW_INTERVAL_FRAMES = 12  # 384 ms at 16 kHz with 512 samples per frame.
+
 
 class LiveASR:
     def __init__(self, transcribe, emit, *, preview_request=None):
@@ -17,9 +19,9 @@ class LiveASR:
         self.finals = asyncio.Queue(maxsize=4)
 
     def preview(self, segmenter):
-        # A frame is 32 ms. Snapshot only when the previous preview has returned.
+        # Snapshot only when the previous preview has returned.
         count = segmenter.voiced
-        if segmenter.silent or count - self.last_preview < 16:
+        if segmenter.silent or count - self.last_preview < PREVIEW_INTERVAL_FRAMES:
             return
         if self.preview_task and not self.preview_task.done():
             return
