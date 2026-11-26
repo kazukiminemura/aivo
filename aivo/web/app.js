@@ -11,6 +11,7 @@ let state = 'Idle', running = false, accepting = false, generation = 0, turn = 0
 let stopTimer;
 let ttsBackend = 'voicevox';
 let speechTest;
+let transcriptionOnly = false, sttReady = false;
 let protocolWarning = false;
 let voiceInterruption = false, interruptionSupported = false;
 let captureEpoch = 0, captureReady = false;
@@ -39,8 +40,13 @@ function showState(value) {
   $('state').textContent = value === 'Listening' && capture && !captureReady
     ? 'マイクを再開しています' : states[value][0];
   $('hint').textContent = states[value][1];
+  if (running && transcriptionOnly) {
+    if (value === 'Processing') $('state').textContent = '文字起こし中';
+    if (value === 'Processing' || value === 'Listening') $('hint').textContent = '発話ごとに文字起こし結果を表示します。';
+  }
   $('orb').dataset.state = value;
   $('start').disabled = running || !ready;
+  $('test-mic').disabled = running || !sttReady;
   $('stop').disabled = !running;
   $('test-speech').disabled = running || ttsBackend !== 'browser';
   $('microphone').disabled = running;
@@ -318,6 +324,12 @@ async function receive(message, fromSocket) {
     return;
   }
   if (message.type === 'state' && states[message.state]) showState(message.state);
+  if (message.type === 'transcription' && transcriptionOnly) {
+    const line = document.createElement('p');
+    line.textContent = message.text;
+    $('mic-text').append(line);
+    $('mic-text').scrollTop = $('mic-text').scrollHeight;
+  }
   if (message.type === 'history_status') { $('settings-message').textContent = message.message; }
   if (message.type === 'lookup_status') {
     $('lookup-status').textContent = message.text;
@@ -375,8 +387,11 @@ async function microphones() {
   });
   if ([...$('microphone').options].some((option) => option.value === selected)) $('microphone').value = selected;
 }
-async function start() {
+async function start(testMicrophone = false) {
   if (running) return;
+  transcriptionOnly = testMicrophone;
+  $('mic-results').hidden = !transcriptionOnly;
+  if (transcriptionOnly) $('mic-text').replaceChildren();
   if (speechTest) {
     clearTimeout(speechTest.timer);
     speechTest.onstart = speechTest.onend = speechTest.onerror = null;
@@ -417,7 +432,7 @@ async function start() {
     input.connect(capture); capture.connect(audioContext.destination);
     void microphones().catch(() => {});
     accepting = true;
-    command('start');
+    command(transcriptionOnly ? 'start_transcription' : 'start');
   } catch (exc) {
     if (epoch !== generation) return;
     stop();
@@ -431,6 +446,7 @@ async function refresh() {
     const response = await fetch('/api/health', {signal: AbortSignal.timeout(8000), cache: 'no-store'});
     if (!response.ok) throw new Error();
     const health = await response.json();
+    sttReady = health.stt && health.transcription_test === true;
     interruptionSupported = health.voice_interruption === true;
     updateVoiceInterruption();
     const protocolCurrent = health.response_protocol === 'final-json-v1';
@@ -457,14 +473,15 @@ async function refresh() {
       protocolWarning = false;
     }
     $('configuration').textContent = `STT: OVMS / ${health.stt_model} / LLM: OVMS / ${health.llm_model} / 読み上げ: ${ttsBackend === "browser" ? "端末の日本語ローカル音声" : `VOICEVOX speaker ${health.speaker}`} / 応答方式: ${health.response_protocol || '旧バージョン'} / 実行ID: ${health.runtime_id || '不明'} / 検索処理: ${health.lookup_revision || "旧版"} / 外部検索: ${health.web_search ? "有効" : "無効"} / 音声割り込み: ${voiceInterruption ? '有効（自動）' : '無効（サーバー未対応）'}`;
-    if (!ready) $('hint').textContent = protocolCurrent
+    if (!ready && !(running && transcriptionOnly)) $('hint').textContent = protocolCurrent
       ? 'READMEの初期設定を完了し、サービスを起動して「再確認」を押してください。'
       : 'サーバーを再起動してから、この画面を再読み込みしてください。';
-    if (protocolCurrent && health.ready && ttsBackend === 'browser' && !localJapaneseVoice()) $('hint').textContent = '端末の日本語ローカル音声が必要です。Windowsの言語と音声の設定から日本語の音声合成を追加してください。';
+    if (!(running && transcriptionOnly) && protocolCurrent && health.ready && ttsBackend === 'browser' && !localJapaneseVoice()) $('hint').textContent = '端末の日本語ローカル音声が必要です。Windowsの言語と音声の設定から日本語の音声合成を追加してください。';
   } catch {
-    ready = false; $('services').textContent = 'アプリの接続を確認できません。';
+    ready = sttReady = false; $('services').textContent = 'アプリの接続を確認できません。';
   } finally {
     $('refresh').disabled = false; $('start').disabled = running || !ready;
+    $('test-mic').disabled = running || !sttReady;
     $('test-speech').disabled = running || ttsBackend !== 'browser';
   }
 }
@@ -541,7 +558,8 @@ $('preferences').addEventListener('submit', async (event) => {
   } catch (exc) { $('settings-message').textContent = exc.message; }
   finally { $('save-preferences').disabled = false; }
 });
-$('start').addEventListener('click', start);
+$('start').addEventListener('click', () => start());
+$('test-mic').addEventListener('click', () => start(true));
 $('stop').addEventListener('click', stop);
 $('reset').addEventListener('click', async () => {
   $('reset').disabled = true;

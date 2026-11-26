@@ -159,6 +159,40 @@ def test_ten_mocked_voice_turns_history_and_reset(session):
         assert len(fake.messages[-1]) == 2
 
 
+def test_microphone_test_uses_only_stt_and_can_resume_conversation(session, monkeypatch):
+    from aivo import server
+    client, fake = session
+
+    async def speech_model_only(client, url):
+        return [server.settings.stt_model]
+
+    monkeypatch.setattr(server.ovms, "model_ids", speech_model_only)
+    with connect(client) as ws:
+        ws.receive_json()
+        with monkeypatch.context() as isolated:
+            for owner, method in [(server, "readiness"), (fake, "prepare"), (server, "lookup"),
+                                  (server.history_store, "append_turn")]:
+                isolated.setattr(owner, method, lambda *args: pytest.fail("Unexpected conversation operation"))
+            isolated.setattr(server.settings, "save_history", True)
+            isolated.setattr(server.settings, "web_search", True)
+            ws.send_json({"type": "start_transcription"})
+            assert ws.receive_json()["state"] == "Preparing"
+            assert ws.receive_json()["state"] == "Listening"
+            for _ in range(2):
+                send_turn(ws)
+                assert ws.receive_json()["state"] == "Processing"
+                result = ws.receive_json()
+                assert (result["type"], result["text"]) == ("transcription", "test utterance")
+                assert ws.receive_json()["state"] == "Listening"
+            assert not fake.messages and fake.tts_calls == 0
+            ws.send_json({"type": "stop"})
+            assert ws.receive_json()["state"] == "Idle"
+        start(ws)
+        send_turn(ws)
+        receive_audio(ws)
+        assert len(fake.messages[-1]) == 2
+
+
 def test_error_recovery_and_stop_discards_late_pcm(session):
     client, fake = session
     fake.fail = True

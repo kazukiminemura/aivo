@@ -57,6 +57,7 @@ async def health():
     status["web_search"] = settings.web_search
     status["lookup_revision"] = 3
     status["voice_interruption"] = True
+    status["transcription_test"] = True
     status["barge_threshold"] = settings.barge_threshold
     status["barge_min_ms"] = settings.barge_min_ms
     status["response_protocol"] = RESPONSE_PROTOCOL
@@ -159,6 +160,7 @@ async def conversation(ws: WebSocket):
     turn_id = 0
     task = None
     session_tts = "voicevox"
+    transcription_only = False
     active = listening = awaiting_playback = playback_pending = False
     history = []
     dialogue = DialogueState()
@@ -218,14 +220,18 @@ async def conversation(ws: WebSocket):
         try:
             await emit("state", state="Preparing")
             async with asyncio.timeout(180):
-                status = await readiness(settings)
-                if not status["ready"]:
-                    raise RuntimeError("準備が必要です。接続状態とREADMEの初期設定を確認してください。")
-                session_tts = status.get("tts_backend", "voicevox")
-                if session_tts == "browser":
-                    await backends.prepare(client, tts_backend="browser")
+                if transcription_only:
+                    if settings.stt_model not in await ovms.model_ids(client, settings.ovms):
+                        raise RuntimeError(f"OVMSで音声認識モデル {settings.stt_model} を起動してください。")
                 else:
-                    await backends.prepare(client)
+                    status = await readiness(settings)
+                    if not status["ready"]:
+                        raise RuntimeError("準備が必要です。接続状態とREADMEの初期設定を確認してください。")
+                    session_tts = status.get("tts_backend", "voicevox")
+                    if session_tts == "browser":
+                        await backends.prepare(client, tts_backend="browser")
+                    else:
+                        await backends.prepare(client)
                 if vad is None:
                     vad = await asyncio.to_thread(backends.vad)
                 listening = True
@@ -250,7 +256,9 @@ async def conversation(ws: WebSocket):
                 audio = np.frombuffer(raw, dtype="<f4").copy()
                 text = await backends.transcribe(client, audio)
                 metrics["stt_ms"] = round((perf_counter() - started) * 1000, 1)
-                if not text:
+                if transcription_only and text:
+                    await emit("transcription", text=text)
+                if transcription_only or not text:
                     active = False
                     await emit("state", state="Listening")
                     return
@@ -410,8 +418,9 @@ async def conversation(ws: WebSocket):
                     break
                 command = json.loads(packet["text"])
                 kind = command.get("type")
-                if kind == "start":
+                if kind in {"start", "start_transcription"}:
                     await cancel()
+                    transcription_only = kind == "start_transcription"
                     task = asyncio.create_task(start_session())
                 elif kind == "interrupt" and command.get("turn_id") == turn_id and active and playback_pending:
                     await cancel(interrupted=True)
